@@ -32,7 +32,7 @@ A deterministic, AI-powered code change reasoning engine. Intentra analyzes your
 
 1. **Context** -- Intentra runs `git diff` on your working tree and parses the output into individual hunks. Each hunk receives a stable, deterministic ID via `sha256(filePath + header + patch)`.
 
-2. **Clustering** -- The hunks are sent to an LLM (OpenAI) with strict JSON schema enforcement. The model groups related hunks by intent: which changes belong together in a single atomic commit.
+2. **Clustering** -- The hunks are sent to an LLM with strict JSON schema enforcement. The model groups related hunks by intent: which changes belong together in a single atomic commit. Supports OpenAI, Anthropic Claude, and any OpenAI-compatible endpoint (Ollama, vLLM, LM Studio).
 
 3. **Messaging** -- For each cluster, the LLM generates Conventional Commit metadata: type, scope, subject, body, breaking change flags, and footers. All output is schema-validated.
 
@@ -46,7 +46,11 @@ A deterministic, AI-powered code change reasoning engine. Intentra analyzes your
 
 - **Go 1.22+**
 - **Git** installed and available on `PATH`
-- **OpenAI API key** set as the `OPENAI_API_KEY` environment variable
+- An API key for your chosen provider:
+  - **OpenAI**: set `OPENAI_API_KEY`
+  - **Anthropic**: set `ANTHROPIC_API_KEY`
+  - **Gemini**: set `GEMINI_API_KEY`
+  - **Ollama**: no key needed (runs locally)
 
 ---
 
@@ -84,6 +88,148 @@ intentra apply
 
 # 6. Actually apply the commits
 intentra apply --yes
+```
+
+---
+
+## Examples
+
+### Splitting a messy diff into clean commits
+
+You've been working for a while and have a mix of unrelated changes in your working tree -- a bug fix, a new feature, and some refactoring:
+
+```bash
+$ git diff --stat
+ src/auth/jwt.go       | 42 +++++++++++++++++++++++++++
+ src/auth/jwt_test.go  | 18 ++++++++++++
+ src/api/handler.go    |  8 ++----
+ src/api/middleware.go  | 15 ++++++++--
+ src/core/utils.go     | 23 ++++++---------
+ 5 files changed, 81 insertions(+), 25 deletions(-)
+```
+
+Run `intentra plan` to see how it would split these into atomic commits:
+
+```
+$ intentra plan
+
+Found 7 hunk(s) across the diff.
+Generating commit plan...
+
+Commit Plan (3 commit(s)):
+Base: e4a91bc
+
+  1. feat(auth): add JWT token validation and refresh logic
+     hunks: 3
+  2. fix(api): handle nil user in request middleware
+     hunks: 2
+  3. refactor(core): simplify utility string helpers
+     hunks: 2
+```
+
+Three clean, atomic commits -- each with a single concern. When you're happy with the plan:
+
+```
+$ intentra apply --yes
+
+Applying 3 commit(s)...
+Successfully applied 3 commit(s).
+```
+
+```
+$ git log --oneline -3
+
+a7f2d1c refactor(core): simplify utility string helpers
+b3e8f4a fix(api): handle nil user in request middleware
+c9d1a2e feat(auth): add JWT token validation and refresh logic
+```
+
+### Previewing the JSON plan
+
+Use `--json` to get the full structured plan, useful for CI pipelines or custom tooling:
+
+```
+$ intentra plan --json
+```
+
+```json
+{
+  "tool_version": "0.1.0",
+  "base_ref": "e4a91bc",
+  "style": {
+    "convention": "conventional_commits",
+    "max_subject_len": 72,
+    "allowed_types": ["feat", "fix", "refactor", "perf", "docs", "test", "chore"],
+    "scopes": ["auth", "api", "core"]
+  },
+  "commits": [
+    {
+      "id": "c1",
+      "type": "feat",
+      "scope": "auth",
+      "subject": "add JWT token validation and refresh logic",
+      "body": "Implement token validation middleware and automatic refresh\nfor expired tokens using the configured secret key.",
+      "breaking": false,
+      "hunks": ["a1b2c3...", "d4e5f6...", "71g8h9..."]
+    },
+    {
+      "id": "c2",
+      "type": "fix",
+      "scope": "api",
+      "subject": "handle nil user in request middleware",
+      "breaking": false,
+      "hunks": ["j0k1l2...", "m3n4o5..."]
+    },
+    {
+      "id": "c3",
+      "type": "refactor",
+      "scope": "core",
+      "subject": "simplify utility string helpers",
+      "breaking": false,
+      "hunks": ["p6q7r8...", "s9t0u1..."]
+    }
+  ]
+}
+```
+
+### Safe dry-run by default
+
+`intentra apply` without `--yes` shows the plan but makes no changes:
+
+```
+$ intentra apply
+
+Commit Plan (3 commit(s)):
+Base: e4a91bc
+
+  1. feat(auth): add JWT token validation and refresh logic
+     hunks: 3
+  2. fix(api): handle nil user in request middleware
+     hunks: 2
+  3. refactor(core): simplify utility string helpers
+     hunks: 2
+
+Dry-run mode. Pass --yes to apply.
+```
+
+Your working tree is untouched. Review the plan, then run with `--yes` when ready.
+
+### Using with a local model
+
+Run Intentra completely offline with Ollama:
+
+```bash
+# Pull a model
+ollama pull qwen3-coder:32b
+
+# Configure Intentra
+cat .engine.yaml
+# ai:
+#     provider: ollama
+#     model: qwen3-coder:32b
+
+# Plan as usual -- no API key needed, all local
+intentra plan
 ```
 
 ---
@@ -206,6 +352,7 @@ style:
     scopes: []
 
 ai:
+    provider: openai
     model: gpt-4.1
     temperature: 0.2
     max_diff_kb: 500
@@ -222,12 +369,108 @@ engine:
 | `style` | `max_subject_len` | int | `72` | Maximum subject line length |
 | `style` | `allowed_types` | []string | `[feat, fix, ...]` | Permitted commit types |
 | `style` | `scopes` | []string | `[]` | Permitted scopes (empty = any) |
-| `ai` | `model` | string | `gpt-4.1` | OpenAI model to use |
+| `ai` | `provider` | string | `openai` | LLM provider: `openai`, `anthropic`, `gemini`, or `ollama` |
+| `ai` | `model` | string | `gpt-4.1` | Model name (provider-specific) |
 | `ai` | `temperature` | float | `0.2` | LLM temperature (0.1--0.2 recommended) |
 | `ai` | `max_diff_kb` | int | `500` | Maximum diff size in KB before aborting |
+| `ai` | `base_url` | string | *(empty)* | Custom API base URL (for Azure, proxies, or self-hosted endpoints) |
 | `engine` | `strict_mode` | bool | `true` | Enable strict validation |
 
 If no `.engine.yaml` is found, Intentra uses these defaults automatically.
+
+### Provider Setup
+
+**OpenAI** (default):
+
+```yaml
+ai:
+    provider: openai
+    model: gpt-4.1          # or any OpenAI model
+```
+
+**Anthropic Claude**:
+
+```yaml
+ai:
+    provider: anthropic
+    model: claude-sonnet-4-5-20250929   # or any Claude model
+```
+
+**Google Gemini**:
+
+```yaml
+ai:
+    provider: gemini
+    model: gemini-3.1-pro    # or any Gemini model
+```
+
+**Ollama** (local, no API key needed):
+
+```yaml
+ai:
+    provider: ollama
+    model: llama3            # or any model you've pulled
+```
+
+**Azure OpenAI** or any OpenAI-compatible endpoint:
+
+```yaml
+ai:
+    provider: openai
+    model: my-deployment-name
+    base_url: https://my-instance.openai.azure.com/openai/deployments/my-deployment
+```
+
+**vLLM / LM Studio** (local OpenAI-compatible server):
+
+```yaml
+ai:
+    provider: openai
+    model: my-local-model
+    base_url: http://localhost:8000/v1
+```
+
+### Model Reference
+
+The `model` field is passed directly to the provider API -- any model your account has access to will work. Here are some common choices:
+
+**OpenAI**
+
+| Model | Notes |
+|-------|-------|
+| `gpt-5.2` | Latest flagship. Best quality for complex changesets. |
+| `gpt-5-mini` | Smaller, faster GPT-5 variant. Good cost/quality balance. |
+| `gpt-4.1` | Default. Proven, reliable, still available. |
+| `gpt-4.1-mini` | Cheaper and faster. Good for smaller diffs. |
+| `gpt-4.1-nano` | Cheapest OpenAI option. |
+
+**Anthropic Claude**
+
+| Model | Notes |
+|-------|-------|
+| `claude-opus-4-6-latest` | Most intelligent. Best for large, complex changesets. |
+| `claude-sonnet-4-6-latest` | Best speed/intelligence balance. Recommended starting point. |
+| `claude-haiku-4-5-latest` | Fastest and cheapest Claude model. |
+
+**Google Gemini**
+
+| Model | Notes |
+|-------|-------|
+| `gemini-3.1-pro` | Latest. Strong reasoning, 1M token context. |
+| `gemini-2.5-pro` | Proven, excellent for code and STEM tasks. |
+| `gemini-2.5-flash` | Fast and cheap. Good for smaller diffs. |
+
+**Ollama (local)**
+
+| Model | Notes |
+|-------|-------|
+| `qwen3-coder:32b` | Top pick for coding. Stable tool calling, strong reasoning. |
+| `glm4.7-flash` | Strong 30B-class model. Precise and reliable. |
+| `deepseek-r1` | Excellent reasoning and code understanding. |
+| `llama3.3:70b` | Meta's latest. Needs 48GB+ VRAM. |
+| `qwen3-coder:14b` | Lighter option for 8-16GB VRAM. |
+
+New models work immediately -- no Intentra update required. Just change the `model` string in your config.
 
 ---
 
@@ -242,7 +485,7 @@ CLI Command
 Context Builder ---- git diff, git log ---> EngineContext { Hunks, RecentCommits, Config }
     |
     v
-Reasoning Engine --- OpenAI structured output ---> JSON (schema-validated)
+Reasoning Engine --- LLM structured output (OpenAI / Anthropic / Ollama) ---> JSON (schema-validated)
     |
     v
 Commit Planner ---- two-pass (cluster + message) ---> CommitPlan
@@ -308,7 +551,10 @@ intentra/
     │   └── change_intent.go         Reserved for future capabilities
     │
     ├── reasoning/                   LLM abstraction (NO git calls)
-    │   ├── client.go                ReasoningEngine interface + OpenAI implementation
+    │   ├── client.go                ReasoningEngine interface
+    │   ├── openai.go                OpenAI + OpenAI-compatible implementation
+    │   ├── anthropic.go             Anthropic Claude implementation (tool_use)
+    │   ├── factory.go               Provider selection from config
     │   └── retry.go                 Generic CallWithRetry[T] with correction prompts
     │
     ├── planners/                    Plan generation (NO git calls)
