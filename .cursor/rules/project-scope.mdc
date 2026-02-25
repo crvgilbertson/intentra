@@ -1,0 +1,55 @@
+---
+description: v0.1 scope, canonical types/interfaces, and target folder structure
+alwaysApply: true
+---
+
+# Project Scope & Reference
+
+## v0.1 Scope (do not overbuild)
+
+Deliver:
+- `plan` — generate CommitPlan from hunks using LLM structured output
+- `apply` — apply CommitPlan deterministically using `git apply --cached` + `git commit`
+- `init` — write default `.engine.yaml` config
+
+Defer: PR planning, risk scoring, release tooling, indexes, daemons, GUIs.
+
+## Canonical Types & Interfaces
+
+Use these names consistently; do not rename or reinvent.
+
+Domain types (`engine/models/`):
+- `Hunk` — { HunkID, FilePath, Header, Patch, Summary }
+- `CommitPlan` — { ToolVersion, BaseRef, Style, Commits }
+- `CommitUnit` — { ID, Type, Scope, Subject, Body, Breaking, Footers, Hunks }
+- `CommitStyle` — { Convention, MaxSubjectLen, AllowedTypes, Scopes }
+
+Context (`engine/context/`):
+- `EngineContext` — { BaseRef, Hunks, RecentCommits, Config }
+
+Interfaces:
+- `Plan` — { Validate() error }
+- `Planner` — { Name() string; BuildPlan(ctx EngineContext) (Plan, error) }
+- `Executor` — { Execute(plan Plan) error }
+- `ReasoningEngine` — { CallStructured(schema JSONSchema, input any) (any, error) }
+
+## Folder Structure (target layout)
+
+```
+/cmd            — root.go, plan.go, apply.go, init.go
+/engine
+  /context      — repo_context.go, diff_parser.go, hunk_hasher.go
+  /models       — hunk.go, commit_plan.go, change_intent.go
+  /reasoning    — client.go, structured_call.go, retry.go
+    /schemas
+  /planners     — planner.go, commit_planner.go, commit_schema.go
+  /validators   — commit_validator.go
+  /executors    — executor.go, git_executor.go
+/config         — config.go
+```
+
+## Deliverables for each change
+
+- Update types and interfaces cleanly
+- Add or update tests
+- Provide brief notes in PR-style summary (what/why)

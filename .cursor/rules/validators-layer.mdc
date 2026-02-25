@@ -1,0 +1,21 @@
+---
+description: CommitPlan validation rules
+globs: "engine/validators/**/*.go"
+alwaysApply: false
+---
+
+# Validator Layer Rules
+
+**NO git calls allowed.**
+
+CommitPlan validation must check:
+- Every hunk_id in context appears exactly once across all commits.
+- No duplicate hunk_ids across commits.
+- Commit type is in allowed types.
+- Scope (if present) matches allowed scopes or is empty.
+- Subject constraints: length, no trailing period, imperative tense (best-effort).
+- Breaking commits must have a `BREAKING CHANGE` footer or body mention.
+
+If invalid:
+- Attempt one correction retry with explicit error feedback.
+- If still invalid, return an error and do not apply anything.

@@ -1,0 +1,20 @@
+---
+description: Executor layer constraints and apply strategy
+globs: "engine/executors/**/*.go"
+alwaysApply: false
+---
+
+# Executor Layer Rules
+
+- Can call git. **NO LLM calls allowed.**
+- Only executes when user explicitly requests apply.
+
+## Apply Strategy (v0.1)
+
+- Generate a patch per commit containing only that commit's hunks.
+- Stage via: `git apply --cached <patch>`
+- Commit via: `git commit -m "<subject>" [-m "<body>"]`
+- If any step fails:
+  - Stop immediately.
+  - Restore index to pre-apply snapshot.
+  - Report which commit failed and why.
