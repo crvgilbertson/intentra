@@ -2,8 +2,6 @@
 
 A deterministic, AI-powered code change reasoning engine. Intentra analyzes your uncommitted diffs, understands the intent behind each change, and produces structured, atomic commit plans that follow the [Conventional Commits](https://www.conventionalcommits.org/) specification.
 
-This is not a commit message tool. This is a code change reasoning engine.
-
 ---
 
 ## Table of Contents
