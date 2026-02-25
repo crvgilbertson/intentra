@@ -13,6 +13,7 @@ import (
 	"intentra/engine/planners"
 	"intentra/engine/reasoning"
 	"intentra/engine/validators"
+
 )
 
 var jsonOutput bool
@@ -45,7 +46,10 @@ func runPlan(cmd *cobra.Command, args []string) error {
 	fmt.Fprintf(os.Stderr, "Found %d hunk(s) across the diff.\n", len(ec.Hunks))
 	fmt.Fprintf(os.Stderr, "Generating commit plan...\n")
 
-	engine := reasoning.NewOpenAIEngine(cfg.AI.Model, cfg.AI.Temperature)
+	engine, err := reasoning.NewEngineFromConfig(cfg.AI)
+	if err != nil {
+		return fmt.Errorf("creating reasoning engine: %w", err)
+	}
 	planner := planners.NewCommitPlanner(engine)
 
 	plan, err := planner.BuildPlan(ctx, ec)
