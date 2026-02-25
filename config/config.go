@@ -10,9 +10,11 @@ import (
 )
 
 type AIConfig struct {
+	Provider    string  `yaml:"provider"`
 	Model       string  `yaml:"model"`
 	Temperature float64 `yaml:"temperature"`
 	MaxDiffKB   int     `yaml:"max_diff_kb"`
+	BaseURL     string  `yaml:"base_url,omitempty"`
 }
 
 type EngineSettings struct {
@@ -34,6 +36,7 @@ func DefaultConfig() EngineConfig {
 			Scopes:        []string{},
 		},
 		AI: AIConfig{
+			Provider:    "openai",
 			Model:       "gpt-4.1",
 			Temperature: 0.2,
 			MaxDiffKB:   500,
