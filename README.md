@@ -776,7 +776,7 @@ The individual features (v0.1--v0.4) drive developer adoption. The team features
 - **Live spinner**: elapsed-time indicator during LLM calls
 - **Deterministic patch output**: files sorted alphabetically in generated patches
 
-### v0.3.0 -- GitHub Integration & Progress (Released)
+### v0.3.0 -- GitHub Integration, Scaling & Hardening (Released)
 
 - **Phased progress indicator**: spinner shows contextual stages ("Clustering N hunks...", "Generating commit messages...") with elapsed time, instead of a generic message
 - **Hunk summarization**: large patches are automatically truncated (first/last N lines) in the clustering prompt, reducing token usage. Configurable via `max_hunk_lines` (default: 50, 0 = no truncation). Full patches are preserved for apply.
