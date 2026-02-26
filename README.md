@@ -30,19 +30,19 @@ A deterministic, AI-powered code change reasoning engine. Intentra analyzes your
 
 ## How It Works
 
-1. **Context** -- Intentra runs `git diff` on your working tree and parses the output into individual hunks. Each hunk receives a stable, deterministic ID via `sha256(filePath + header + patch)`.
+1. **Context** -- Intentra runs `git diff HEAD` on your working tree and parses the output into individual hunks, capturing both staged and unstaged changes. Each hunk receives a stable, deterministic ID via `sha256(filePath + header + patch)`. Untracked files are detected separately and included as synthetic diffs. Files matching `ignore_patterns` in your config are excluded.
 
-2. **Clustering** -- The hunks are sent to an LLM with strict JSON schema enforcement. The model groups related hunks by intent: which changes belong together in a single atomic commit. Supports OpenAI, Anthropic Claude, and any OpenAI-compatible endpoint (Ollama, vLLM, LM Studio).
+2. **Clustering** -- The hunks are sent to an LLM with strict JSON schema enforcement. The model groups related hunks by intent: which changes belong together in a single atomic commit. Supports OpenAI, Anthropic Claude, and any OpenAI-compatible endpoint (Ollama, vLLM, LM Studio). A live spinner shows elapsed time during LLM calls. If the model drops any hunks, a targeted rescue call recovers them (see [Orphan Hunk Recovery](#two-pass-planning-pipeline)).
 
-3. **Messaging** -- For each cluster, the LLM generates Conventional Commit metadata: type, scope, subject, body, breaking change flags, and footers. All output is schema-validated.
+3. **Messaging** -- For each cluster, the LLM generates Conventional Commit metadata: type, scope, subject, body, breaking change flags, and footers. All output is schema-validated. Both passes support configurable retries with correction prompts.
 
 4. **Ordering** -- Commits are reordered by dependency: foundational changes (models, types, interfaces) are applied before higher-level consumers (planners, validators, CLI). This ensures the repository compiles at every commit boundary.
 
-5. **Validation** -- The resulting `CommitPlan` is validated against business rules: every hunk is assigned exactly once, commit types and scopes are from the allowed set, subject length is within limits, breaking changes have proper footers, and more.
+5. **Validation** -- The resulting `CommitPlan` is validated against business rules: every hunk is assigned exactly once, commit types and scopes are from the allowed set, subject length is within limits, breaking changes have proper footers, and more. Warnings are printed when multiple commits touch the same file.
 
-6. **Caching** -- The validated plan is saved to `.intentra-plan.json` with a diff fingerprint (SHA256 of all hunk IDs). If you run `apply` without changing your working tree, the cached plan is reused instantly -- no second LLM call. If the diff changes, the stale plan is detected and a fresh one is generated.
+6. **Caching** -- The validated plan is saved to `.intentra/plan.json` with a diff fingerprint (SHA256 of all hunk IDs). If you run `apply` without changing your working tree, the cached plan is reused instantly -- no second LLM call. If the diff changes, the stale plan is detected and a fresh one is generated.
 
-7. **Execution** -- Only when you explicitly pass `--yes` does Intentra touch git. It stages each commit's hunks via `git apply --cached` and commits them. If anything fails, the index is restored to its pre-apply state. No partial applies. No data corruption.
+7. **Execution** -- Only when you explicitly pass `--yes` does Intentra touch git. It snapshots the current HEAD and index, resets to a clean state, then stages each commit's hunks via `git apply --cached` and commits them. If anything fails, all commits are rolled back and the index is restored to its pre-apply state. No partial applies. No data corruption.
 
 ---
 
@@ -388,15 +388,25 @@ style:
         - test
         - chore
     scopes: []
+    scope_required: false
+    body_required: false
 
 ai:
     provider: openai
     model: gpt-4.1
     temperature: 0.2
     max_diff_kb: 500
+    max_retries: 1
+    timeout: 120
 
 engine:
     strict_mode: true
+    protected_branches:
+        - main
+        - master
+    max_commits: 20
+    ignore_patterns: []
+    sign_commits: false
 ```
 
 ### Configuration Reference
@@ -407,14 +417,23 @@ engine:
 | `style` | `max_subject_len` | int | `72` | Maximum subject line length |
 | `style` | `allowed_types` | []string | `[feat, fix, ...]` | Permitted commit types |
 | `style` | `scopes` | []string | `[]` | Permitted scopes (empty = any) |
+| `style` | `scope_required` | bool | `false` | Require a scope on every commit |
+| `style` | `body_required` | bool | `false` | Require a body on every commit |
 | `ai` | `provider` | string | `openai` | LLM provider: `openai`, `anthropic`, `gemini`, or `ollama` |
 | `ai` | `model` | string | `gpt-4.1` | Model name (provider-specific) |
 | `ai` | `temperature` | float | `0.2` | LLM temperature (0.1--0.2 recommended) |
 | `ai` | `max_diff_kb` | int | `500` | Maximum diff size in KB before aborting |
 | `ai` | `base_url` | string | *(empty)* | Custom API base URL (for Azure, proxies, or self-hosted endpoints) |
+| `ai` | `max_retries` | int | `1` | Number of LLM retry attempts on validation failure |
+| `ai` | `timeout` | int | `120` | Timeout in seconds for the entire planning phase |
 | `engine` | `strict_mode` | bool | `true` | Enable strict validation |
+| `engine` | `protected_branches` | []string | `[main, master]` | Branches that `apply --yes` refuses to commit to |
+| `engine` | `max_commits` | int | `20` | Maximum number of commits per plan |
+| `engine` | `ignore_patterns` | []string | `[]` | File glob patterns to exclude from the diff |
+| `engine` | `sign_commits` | bool | `false` | GPG-sign commits with `git commit -S` |
+| `engine` | `auto_push` | bool | `false` | Automatically push to remote after successful apply (handles `--set-upstream` for new branches) |
 
-If no `.engine.yaml` is found, Intentra uses these defaults automatically.
+If no config file is found, Intentra uses these defaults automatically.
 
 ### Provider Setup
 
