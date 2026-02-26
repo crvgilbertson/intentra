@@ -49,7 +49,19 @@ func generateSchema[T any]() interface{} {
 	return reflector.Reflect(v)
 }
 
+// RescueAssignment maps a single orphaned hunk to an existing group.
+type RescueAssignment struct {
+	HunkID  string `json:"hunk_id" jsonschema_description:"The hunk_id to assign"`
+	GroupID string `json:"group_id" jsonschema_description:"The existing group to assign it to"`
+}
+
+// RescueResponse is the schema for the targeted orphan-rescue LLM call.
+type RescueResponse struct {
+	Assignments []RescueAssignment `json:"assignments" jsonschema_description:"Assignment of each orphaned hunk to an existing group"`
+}
+
 var (
 	ClusteringSchema = generateSchema[ClusteringResponse]()
 	MessagingSchema  = generateSchema[MessagingResponse]()
+	RescueSchema     = generateSchema[RescueResponse]()
 )
