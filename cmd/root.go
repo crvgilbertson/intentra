@@ -5,7 +5,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"intentra/config"
+	"github.com/crvgilbertson/intentra/config"
 )
 
 var (

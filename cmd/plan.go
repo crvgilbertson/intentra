@@ -8,13 +8,13 @@ import (
 
 	"github.com/spf13/cobra"
 
-	enginectx "intentra/engine/context"
-	"intentra/engine/models"
-	"intentra/engine/planners"
-	"intentra/engine/reasoning"
-	"intentra/engine/validators"
+	enginectx "github.com/crvgilbertson/intentra/engine/context"
+	"github.com/crvgilbertson/intentra/engine/models"
+	"github.com/crvgilbertson/intentra/engine/planners"
+	"github.com/crvgilbertson/intentra/engine/reasoning"
+	"github.com/crvgilbertson/intentra/engine/validators"
 
-	"intentra/cmd/ui"
+	"github.com/crvgilbertson/intentra/cmd/ui"
 )
 
 const defaultPlanFile = ".intentra-plan.json"
