@@ -532,11 +532,14 @@ After the LLM produces the plan, commits are deterministically reordered by pack
 
 Intentra enforces a strict trust model:
 
+- **Pre-flight checks** -- Before apply, Intentra verifies the repo is in a safe state: not mid-merge, mid-rebase, mid-cherry-pick, or mid-bisect, and has no unmerged paths. If any unsafe state is detected, apply aborts with a clear message and resolution hint.
 - **Plan never mutates** -- `intentra plan` is read-only. It collects the diff and reasons about it but never changes any files or git state.
 - **Dry-run by default** -- `intentra apply` without `--yes` shows the plan and exits.
 - **Protected branch check** -- `apply --yes` refuses to commit to branches listed in `protected_branches` (default: `main`, `master`).
 - **Atomic apply with full rollback** -- Each commit is staged via `git apply --cached` and committed individually. If any step fails, the entire operation is rolled back: all commits are undone with `git reset --soft`, and the index is restored to its pre-apply state. No partial applies. No orphaned commits.
 - **Clean index isolation** -- Before applying, the index is reset to HEAD. Pre-existing staged changes cannot leak into commits.
+- **Hook awareness** -- Intentra detects common hook managers (husky, pre-commit framework, git hooks) and warns before applying. If a hook rejects a commit, the error message suggests `skip_hooks: true`. When `skip_hooks` is enabled, `--no-verify` is passed to `git commit`.
+- **Remote validation** -- When `auto_push` is enabled, Intentra verifies the configured remote exists before attempting to push, avoiding cryptic git errors.
 - **No history rewriting** -- No rebase, no amend, no force-push. Intentra only creates new commits.
 - **Plan caching** -- `plan` saves the result to `.intentra/plan.json` with a diff fingerprint. `apply` reuses it if the diff is unchanged, avoiding redundant LLM calls and ensuring the same plan is applied that was reviewed. If the diff changes, the stale plan is automatically discarded.
 - **Strict layer separation** -- The reasoning layer (LLM) cannot execute git commands. The executor layer cannot call the LLM. This is enforced architecturally, not by convention.
@@ -635,7 +638,7 @@ The test suite includes:
 | `engine/context` | 12 | Diff parsing (single file, multi-file, binary skip, renames, deleted files, mode-only changes, mode+content changes, empty), hunk hashing (stability, uniqueness, format) |
 | `engine/planners` | 9 | Full planner flow with mocked LLM, empty hunks, clustering validation (missing/duplicate/unknown hunks), messaging validation (missing groups), commit dependency reordering, package layer scoring |
 | `engine/validators` | 13 | Valid plan, missing hunk, duplicate hunk, unknown hunk, bad type, bad scope, subject too long, trailing period, uppercase subject, breaking without footer, breaking with footer, empty scopes, multiple errors |
-| `engine/executors` | 6 | Apply single commit, dry-run, fail-and-restore, partial apply rollback, deleted file commit, staged changes included |
+| `engine/executors` | 8 | Apply single commit, dry-run, fail-and-restore, partial apply rollback, deleted file commit, staged changes included, commit author override, skip hooks bypass |
 
 All LLM calls are mocked in tests -- no network access required.
 
@@ -659,7 +662,9 @@ These boundaries are enforced by design and must not be violated:
 
 Intentra is designed as an extensible platform. The `Planner` interface is generic -- commit planning is the first implementation. Future capabilities will follow the same pattern: context -> reasoning -> plan -> validate -> execute.
 
-The individual features (v0.1--v0.4) drive developer adoption. The team features (v0.5--v0.7) drive enterprise value. v1.0.0 is the stability promise.
+The individual features (v0.1--v0.4) drive developer adoption. The team features (v0.5--v0.8) drive enterprise value. v1.0.0 is the stability promise.
+
+**Design note:** v0.1 and v0.2 are intentionally stateless — no database, no persistent index, no learning across sessions. Every `plan` call reads the live diff and starts fresh. This keeps onboarding frictionless (works on any repo with zero setup) and eliminates an entire class of stale-state bugs. Stateful capabilities — commit style learning, cross-session memory, and repo-level intelligence — are introduced incrementally from v0.4 onward, always as opt-in features so that Intentra remains fully functional without them.
 
 ### v0.1.0 -- Commit Planning (Released)
 
@@ -700,6 +705,8 @@ The individual features (v0.1--v0.4) drive developer adoption. The team features
 - Risk scoring per commit (sensitive areas: auth, database, payments, config)
 - Entanglement detection (warning when a commit touches unrelated subsystems)
 - Confidence score for clustering quality (how sure is the model about the grouping?)
+- **Import-graph analysis**: replace directory-name heuristics with actual import graph for commit dependency ordering
+- **Cross-session plan memory**: optionally remember rejected plans so subsequent runs can avoid similar groupings
 - `intentra plan --analyze` flag for detailed per-commit breakdown
 
 ### v0.5.0 -- PR Intelligence
@@ -720,8 +727,26 @@ The individual features (v0.1--v0.4) drive developer adoption. The team features
 
 - Shareable config presets for common setups (monorepo, library, microservice)
 - Scope auto-detection from directory structure and module boundaries
+- **Commit style learning**: analyze recent repo history to infer preferred commit types, scopes, and message patterns — reducing reliance on the LLM's default style
 - Team-wide config in repo root with personal overrides
 - `intentra config check` for config validation and drift detection
+
+### v0.8.0 -- Issue Tracker Integration
+
+- **Jira integration**: link commits and PRs to Jira tickets automatically
+  - Parse ticket IDs from branch names (e.g., `feature/PROJ-123-add-auth`) and include them in commit footers
+  - `intentra plan --ticket PROJ-123` to associate all commits with a specific ticket
+  - Auto-add `Refs: PROJ-123` footers to commit messages when a ticket is detected
+- **PR-to-ticket linking**: when creating PRs with `intentra pr`, auto-populate Jira ticket references in the description
+- **Ticket-aware validation**: warn if commits on a ticket branch don't reference the expected ticket ID
+- **Linear / GitHub Issues support**: same linking model for Linear, GitHub Issues, and other trackers via configurable patterns
+- Configurable ticket ID pattern in `.intentra/config.yaml` (e.g., `ticket_pattern: "[A-Z]+-\\d+"`)
+
+### v0.9.0 -- Repository Intelligence
+
+- **Optional local index**: persistent store of repo structure, file ownership, and change frequency for smarter clustering (opt-in — Intentra remains fully functional without it)
+- **Hot-path detection**: identify files that frequently change together and bias clustering toward co-locating them in the same commit
+- **Style fingerprinting**: learn the team's commit voice from history (preferred verbs, scope conventions, subject length norms) and use it to guide LLM output
 
 ### v1.0.0 -- Stable Platform
 
