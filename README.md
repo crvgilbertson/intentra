@@ -127,7 +127,7 @@ Found 7 hunk(s) across the diff.
 
   ┌─────────────────────────────────────────────────────┐
   │ Commit Plan  3 commit(s)
-  │ base: e4a91bc3d1f2  •  engine v0.2.0
+  │ base: e4a91bc3d1f2  •  engine v0.3.0
   └─────────────────────────────────────────────────────┘
 
   1 feat(auth): add JWT token validation and refresh logic
@@ -173,7 +173,7 @@ $ intentra plan --json
 
 ```json
 {
-  "tool_version": "0.2.0",
+  "tool_version": "0.3.0",
   "base_ref": "e4a91bc",
   "diff_fingerprint": "3a7f2b1c9d4e8f0a...",
   "style": {
@@ -693,14 +693,15 @@ The individual features (v0.1--v0.4) drive developer adoption. The team features
 - **Live spinner**: elapsed-time indicator during LLM calls
 - **Deterministic patch output**: files sorted alphabetically in generated patches
 
-### v0.3.0 -- Streaming & GitHub Integration
+### v0.3.0 -- GitHub Integration & Progress (Released)
 
-- **LLM response streaming**: real-time token-by-token output with live progress, proving the connection is alive and enabling early abort on bad output
-- **Hunk summarization**: send concise summaries instead of full patches during clustering to reduce token usage on large diffs
-- `intentra pr` -- create a feature branch, push, and open a GitHub PR with AI-generated title and description
-- `intentra push` -- push the current branch with smart remote detection
-- Remote branch protection awareness via GitHub API
-- `gh` CLI integration for authentication and API access
+- **Phased progress indicator**: spinner shows contextual stages ("Clustering N hunks...", "Generating commit messages...") with elapsed time, instead of a generic message
+- **Hunk summarization**: large patches are automatically truncated (first/last N lines) in the clustering prompt, reducing token usage. Configurable via `max_hunk_lines` (default: 50, 0 = no truncation). Full patches are preserved for apply.
+- **`intentra push`**: push the current branch with smart upstream detection (`--set-upstream` for new branches), configurable remote, and remote validation
+- **`intentra pr`**: create a GitHub PR with title and body derived from the cached commit plan -- no LLM call needed. Supports `--title`, `--base`, and `--draft` flags. Falls back to `git log` if no cached plan exists.
+- **Remote branch protection awareness**: before pushing, Intentra checks GitHub branch protection via `gh api` and warns if the branch requires PRs. Graceful degradation if `gh` is not installed.
+- **`gh` CLI integration**: shared helpers for authentication validation, repo info, and branch protection checks. Used by `push`, `pr`, and `apply`.
+- **Refactored git helpers**: push, branch, remote, and preflight logic extracted to shared module for reuse across commands
 
 ### v0.4.0 -- Commit Intelligence
 
@@ -711,11 +712,16 @@ The individual features (v0.1--v0.4) drive developer adoption. The team features
 - **Cross-session plan memory**: optionally remember rejected plans so subsequent runs can avoid similar groupings
 - `intentra plan --analyze` flag for detailed per-commit breakdown
 
-### v0.5.0 -- PR Intelligence
+### v0.5.0 -- Ship & PR Intelligence
 
-- Auto-generate PR descriptions from the structured commit plan
-- Suggest PR splits when a branch has too many unrelated changes
-- Review checklist generation based on what files and subsystems changed
+- **`intentra ship`** -- single-command workflow: create branch, apply commits, push, and open PR(s)
+  - AI groups commits into logical PRs: if your diff contains an auth feature, a bug fix, and a refactor, `ship` creates separate branches and PRs for each concern -- not one monolithic PR
+  - **Configurable branch naming**: template-based convention in config (e.g., `branch_template: "{type}/{ticket}/{summary}"`), producing branches like `feat/PROJ-123/add-jwt-auth`. Falls back to `{type}/{short-subject}` when no ticket is present.
+  - Detects if you're already on a feature branch and skips branch creation (just applies, pushes, and opens the PR)
+  - Rolls back branch creation if apply fails mid-way
+- **PR split suggestions**: when a single diff has unrelated concerns, the LLM identifies logical boundaries and proposes N separate PRs rather than one. `intentra ship --split` executes the split automatically; without `--split`, it warns and asks for confirmation.
+- **AI-generated PR descriptions**: structured body with change summary, commit list, affected files, and review hints -- all derived from the commit plan, no extra LLM call
+- **Review checklist generation**: auto-generated checklist based on what files and subsystems changed (e.g., "database migration included -- verify rollback", "auth changes -- check token expiry")
 - `intentra review` command for self-review before submitting
 
 ### v0.6.0 -- CI/CD Integration
@@ -736,10 +742,11 @@ The individual features (v0.1--v0.4) drive developer adoption. The team features
 ### v0.8.0 -- Issue Tracker Integration
 
 - **Jira integration**: link commits and PRs to Jira tickets automatically
-  - Parse ticket IDs from branch names (e.g., `feature/PROJ-123-add-auth`) and include them in commit footers
+  - Parse ticket IDs from branch names (e.g., `feat/PROJ-123/add-auth`) and include them in commit footers
   - `intentra plan --ticket PROJ-123` to associate all commits with a specific ticket
   - Auto-add `Refs: PROJ-123` footers to commit messages when a ticket is detected
-- **PR-to-ticket linking**: when creating PRs with `intentra pr`, auto-populate Jira ticket references in the description
+  - Works with the `branch_template` from v0.5.0 -- `{ticket}` placeholder is populated from the active ticket
+- **PR-to-ticket linking**: when creating PRs with `intentra pr` or `intentra ship`, auto-populate Jira ticket references in the description
 - **Ticket-aware validation**: warn if commits on a ticket branch don't reference the expected ticket ID
 - **Linear / GitHub Issues support**: same linking model for Linear, GitHub Issues, and other trackers via configurable patterns
 - Configurable ticket ID pattern in `.intentra/config.yaml` (e.g., `ticket_pattern: "[A-Z]+-\\d+"`)
