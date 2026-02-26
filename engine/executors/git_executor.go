@@ -70,48 +70,10 @@ func (e *GitExecutor) rollback(ctx context.Context, snap *indexSnapshot, committ
 	return nil
 }
 
-func (e *GitExecutor) Execute(ctx context.Context, plan models.Plan, dryRun bool) error {
-	cp, ok := plan.(*models.CommitPlan)
-	if !ok {
-		return fmt.Errorf("executor expects *CommitPlan, got %T", plan)
-	}
-
-	hunkMap := buildHunkMap(cp)
-
-	snap, err := e.snapshotState(ctx)
-	if err != nil {
-		return fmt.Errorf("snapshot state: %w", err)
-	}
-
-	if snap.originalHead != "" {
-		if err := e.git(ctx, "read-tree", "HEAD"); err != nil {
-			return fmt.Errorf("resetting index: %w", err)
-		}
-	}
-
-	for i, commit := range cp.Commits {
-		if dryRun {
-			fmt.Printf("[dry-run] commit %d/%d: %s\n", i+1, len(cp.Commits), commit.FullSubject())
-			for _, hid := range commit.Hunks {
-				if h, ok := hunkMap[hid]; ok {
-					fmt.Printf("  hunk: %s %s\n", h.FilePath, h.Header)
-				}
-			}
-			continue
-		}
-
-		if err := e.applyCommit(ctx, commit, hunkMap); err != nil {
-			if rollbackErr := e.rollback(ctx, snap, i); rollbackErr != nil {
-				return fmt.Errorf("commit %s failed: %w (additionally, rollback failed: %v)", commit.ID, err, rollbackErr)
-			}
-			if i > 0 {
-				return fmt.Errorf("commit %s failed (rolled back %d prior commit(s)): %w", commit.ID, i, err)
-			}
-			return fmt.Errorf("commit %s failed (index restored): %w", commit.ID, err)
-		}
-	}
-
-	return nil
+// Execute on the base GitExecutor is a guard — callers must use
+// NewGitExecutorWithHunks so that patch generation has hunk data.
+func (e *GitExecutor) Execute(_ context.Context, _ models.Plan, _ bool) error {
+	return fmt.Errorf("GitExecutor requires hunk data; use NewGitExecutorWithHunks")
 }
 
 func (e *GitExecutor) applyCommit(ctx context.Context, commit models.CommitUnit, hunkMap map[string]models.Hunk) error {
@@ -187,12 +149,6 @@ func (e *GitExecutor) gitOutput(ctx context.Context, args ...string) (string, er
 		return "", fmt.Errorf("git %s: %w", strings.Join(args, " "), err)
 	}
 	return string(out), nil
-}
-
-// buildHunkMap creates a lookup of hunk_id -> Hunk from the commit plan.
-// Returns empty when full hunk data isn't available (use GitExecutorWithHunks).
-func buildHunkMap(cp *models.CommitPlan) map[string]models.Hunk {
-	return make(map[string]models.Hunk)
 }
 
 // GitExecutorWithHunks carries full hunk data for patch generation.
