@@ -182,6 +182,62 @@ func TestValidateClusteringResponse_UnknownHunk(t *testing.T) {
 	}
 }
 
+func TestReorderCommitsByDependency(t *testing.T) {
+	hunks := []models.Hunk{
+		{HunkID: "h1", FilePath: "cmd/plan.go"},
+		{HunkID: "h2", FilePath: "cmd/apply.go"},
+		{HunkID: "h3", FilePath: "engine/models/commit_plan.go"},
+		{HunkID: "h4", FilePath: "engine/planners/commit_planner.go"},
+	}
+
+	plan := models.CommitPlan{
+		Commits: []models.CommitUnit{
+			{ID: "c1", Subject: "cli changes", Hunks: []string{"h1", "h2"}},
+			{ID: "c2", Subject: "model changes", Hunks: []string{"h3"}},
+			{ID: "c3", Subject: "planner changes", Hunks: []string{"h4"}},
+		},
+	}
+
+	reorderCommitsByDependency(&plan, hunks)
+
+	if plan.Commits[0].Subject != "model changes" {
+		t.Errorf("expected models commit first, got %q", plan.Commits[0].Subject)
+	}
+	if plan.Commits[1].Subject != "planner changes" {
+		t.Errorf("expected planner commit second, got %q", plan.Commits[1].Subject)
+	}
+	if plan.Commits[2].Subject != "cli changes" {
+		t.Errorf("expected cli commit last, got %q", plan.Commits[2].Subject)
+	}
+
+	if plan.Commits[0].ID != "c1" || plan.Commits[1].ID != "c2" || plan.Commits[2].ID != "c3" {
+		t.Errorf("IDs not renumbered: %s, %s, %s",
+			plan.Commits[0].ID, plan.Commits[1].ID, plan.Commits[2].ID)
+	}
+}
+
+func TestPackageLayer(t *testing.T) {
+	tests := []struct {
+		dir      string
+		expected int
+	}{
+		{"engine/models", 0},
+		{"engine/context", 1},
+		{"engine/reasoning", 2},
+		{"engine/planners", 3},
+		{"engine/validators", 4},
+		{"engine/executors", 5},
+		{"cmd", 6},
+		{".", 7},
+	}
+	for _, tt := range tests {
+		got := packageLayer(tt.dir)
+		if got != tt.expected {
+			t.Errorf("packageLayer(%q) = %d, want %d", tt.dir, got, tt.expected)
+		}
+	}
+}
+
 func TestValidateMessagingResponse_MissingGroup(t *testing.T) {
 	clustering := ClusteringResponse{
 		Groups: []ClusterGroup{

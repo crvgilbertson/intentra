@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 	"sort"
 	"strings"
 
@@ -21,7 +22,8 @@ Rules:
 - Keep inseparable changes together.
 - Do not over-split: if changes are tightly coupled, keep them in one group.
 - Use stable group IDs: g1, g2, g3, etc.
-- Every hunk_id provided must be assigned to exactly one group. Do not omit any.`
+- Every hunk_id provided must be assigned to exactly one group. Do not omit any.
+- Order groups by dependency: foundational changes (models, types, interfaces) first, then logic that depends on them, then CLI/entrypoint last. A later group may depend on an earlier group, but never the reverse.`
 
 const messagingSystemPrompt = `You are a commit message generator following the Conventional Commits specification.
 
@@ -65,6 +67,7 @@ func (p *CommitPlanner) BuildPlan(ctx context.Context, ec enginectx.EngineContex
 	}
 
 	plan := assemblePlan(ec, clustering, messaging)
+	reorderCommitsByDependency(&plan, ec.Hunks)
 	return &plan, nil
 }
 
@@ -228,10 +231,11 @@ func assemblePlan(ec enginectx.EngineContext, clustering ClusteringResponse, mes
 	}
 
 	return models.CommitPlan{
-		ToolVersion: "0.1.0",
-		BaseRef:     ec.BaseRef,
-		Style:       ec.Config.Style,
-		Commits:     commits,
+		ToolVersion:     "0.1.0",
+		BaseRef:         ec.BaseRef,
+		DiffFingerprint: models.DiffFingerprintFromHunks(ec.Hunks),
+		Style:           ec.Config.Style,
+		Commits:         commits,
 	}
 }
 
@@ -242,6 +246,71 @@ func sortHunks(hunks []models.Hunk) {
 		}
 		return hunks[i].Header < hunks[j].Header
 	})
+}
+
+// reorderCommitsByDependency sorts commits so that foundational packages
+// (models, types, interfaces) come before higher-level consumers (cmd, main).
+// Each commit gets a priority score based on the minimum package layer of
+// its hunks. Lower scores are applied first.
+func reorderCommitsByDependency(plan *models.CommitPlan, hunks []models.Hunk) {
+	hunkDir := make(map[string]string, len(hunks))
+	for _, h := range hunks {
+		hunkDir[h.HunkID] = filepath.ToSlash(filepath.Dir(h.FilePath))
+	}
+
+	commitScore := func(c models.CommitUnit) int {
+		minScore := 999
+		for _, hid := range c.Hunks {
+			s := packageLayer(hunkDir[hid])
+			if s < minScore {
+				minScore = s
+			}
+		}
+		return minScore
+	}
+
+	sort.SliceStable(plan.Commits, func(i, j int) bool {
+		return commitScore(plan.Commits[i]) < commitScore(plan.Commits[j])
+	})
+
+	for i := range plan.Commits {
+		plan.Commits[i].ID = fmt.Sprintf("c%d", i+1)
+	}
+}
+
+// packageLayer assigns a numeric layer to a directory path. Lower layers
+// are more foundational and should be committed first.
+func packageLayer(dir string) int {
+	dir = strings.ToLower(dir)
+
+	for _, seg := range strings.Split(dir, "/") {
+		switch seg {
+		case "models", "types", "schema", "schemas":
+			return 0
+		}
+	}
+
+	layerMap := map[string]int{
+		"engine/models":     0,
+		"engine/context":    1,
+		"engine/reasoning":  2,
+		"engine/planners":   3,
+		"engine/validators": 4,
+		"engine/executors":  5,
+		"cmd":               6,
+	}
+
+	for prefix, layer := range layerMap {
+		if strings.HasPrefix(dir, prefix) {
+			return layer
+		}
+	}
+
+	if dir == "." || dir == "" {
+		return 7
+	}
+
+	return 5
 }
 
 // MarshalPlan serializes a CommitPlan to JSON.
