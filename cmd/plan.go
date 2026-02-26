@@ -8,16 +8,16 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/crvgilbertson/intentra/cmd/ui"
+	"github.com/crvgilbertson/intentra/config"
 	enginectx "github.com/crvgilbertson/intentra/engine/context"
 	"github.com/crvgilbertson/intentra/engine/models"
 	"github.com/crvgilbertson/intentra/engine/planners"
 	"github.com/crvgilbertson/intentra/engine/reasoning"
 	"github.com/crvgilbertson/intentra/engine/validators"
-
-	"github.com/crvgilbertson/intentra/cmd/ui"
 )
 
-const defaultPlanFile = ".intentra-plan.json"
+var defaultPlanFile = config.PlanPath
 
 var jsonOutput bool
 
@@ -133,6 +133,9 @@ func uniqueFiles(hunkIDs []string, hunkFileMap map[string]string) []string {
 }
 
 func savePlan(cp *models.CommitPlan) error {
+	if err := config.EnsureDir(); err != nil {
+		return fmt.Errorf("creating %s: %w", config.Dir, err)
+	}
 	data, err := json.MarshalIndent(cp, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshalling plan: %w", err)
