@@ -5,8 +5,8 @@ import (
 	"strings"
 	"unicode"
 
-	enginectx "intentra/engine/context"
-	"intentra/engine/models"
+	enginectx "github.com/crvgilbertson/intentra/engine/context"
+	"github.com/crvgilbertson/intentra/engine/models"
 )
 
 // ValidationError collects multiple validation violations.

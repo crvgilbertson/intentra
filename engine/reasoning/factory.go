@@ -3,7 +3,7 @@ package reasoning
 import (
 	"fmt"
 
-	"intentra/config"
+	"github.com/crvgilbertson/intentra/config"
 )
 
 // NewEngineFromConfig creates the appropriate ReasoningEngine based on

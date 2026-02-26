@@ -4,9 +4,9 @@ import (
 	"strings"
 	"testing"
 
-	"intentra/config"
-	enginectx "intentra/engine/context"
-	"intentra/engine/models"
+	"github.com/crvgilbertson/intentra/config"
+	enginectx "github.com/crvgilbertson/intentra/engine/context"
+	"github.com/crvgilbertson/intentra/engine/models"
 )
 
 func makeEC(hunks []models.Hunk) enginectx.EngineContext {
