@@ -22,14 +22,15 @@ type Footer struct {
 }
 
 type CommitUnit struct {
-	ID       string   `json:"id"`
-	Type     string   `json:"type"`
-	Scope    *string  `json:"scope,omitempty"`
-	Subject  string   `json:"subject"`
-	Body     *string  `json:"body,omitempty"`
-	Breaking bool     `json:"breaking"`
-	Footers  []Footer `json:"footers,omitempty"`
-	Hunks    []string `json:"hunks"`
+	ID        string   `json:"id"`
+	Type      string   `json:"type"`
+	Scope     *string  `json:"scope,omitempty"`
+	Subject   string   `json:"subject"`
+	Body      *string  `json:"body,omitempty"`
+	Breaking  bool     `json:"breaking"`
+	Footers   []Footer `json:"footers,omitempty"`
+	Hunks     []string `json:"hunks"`
+	Rationale string   `json:"rationale,omitempty"`
 }
 
 // FullSubject returns the formatted commit subject line: type(scope): subject
@@ -44,12 +45,13 @@ func (c CommitUnit) FullSubject() string {
 const CurrentSchemaVersion = "v1"
 
 type CommitPlan struct {
-	SchemaVersion   string       `json:"schema_version"`
-	ToolVersion     string       `json:"tool_version"`
-	BaseRef         string       `json:"base_ref"`
-	DiffFingerprint string       `json:"diff_fingerprint"`
-	Style           CommitStyle  `json:"style"`
-	Commits         []CommitUnit `json:"commits"`
+	SchemaVersion     string       `json:"schema_version"`
+	ToolVersion       string       `json:"tool_version"`
+	BaseRef           string       `json:"base_ref"`
+	DiffFingerprint   string       `json:"diff_fingerprint"`
+	PromptFingerprint string       `json:"prompt_fingerprint,omitempty"`
+	Style             CommitStyle  `json:"style"`
+	Commits           []CommitUnit `json:"commits"`
 }
 
 // DiffFingerprintFromHunks produces a stable hash of all hunk IDs. If the
