@@ -66,6 +66,10 @@ func runApply(cmd *cobra.Command, args []string) error {
 
 	printPlanSummary(cp, ec.Hunks)
 
+	for _, w := range validators.WarnFileOverlap(*cp, ec.Hunks) {
+		ui.Warn("  ⚠ %s\n", w)
+	}
+
 	if dryRun {
 		ui.Warn("Dry-run mode. Pass --yes to apply.\n")
 		return nil
@@ -78,7 +82,7 @@ func runApply(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("getting working directory: %w", err)
 	}
 
-	executor := executors.NewGitExecutorWithHunks(cwd, ec.Hunks)
+	executor := executors.NewGitExecutorWithHunks(cwd, ec.Hunks, cfg.Engine.SignCommits)
 	if err := executor.Execute(ctx, cp, false); err != nil {
 		return fmt.Errorf("apply failed: %w", err)
 	}
