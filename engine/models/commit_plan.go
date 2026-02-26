@@ -1,6 +1,11 @@
 package models
 
-import "fmt"
+import (
+	"crypto/sha256"
+	"fmt"
+	"sort"
+	"strings"
+)
 
 type CommitStyle struct {
 	Convention    string   `json:"convention" yaml:"convention"`
@@ -35,10 +40,24 @@ func (c CommitUnit) FullSubject() string {
 }
 
 type CommitPlan struct {
-	ToolVersion string      `json:"tool_version"`
-	BaseRef     string      `json:"base_ref"`
-	Style       CommitStyle `json:"style"`
-	Commits     []CommitUnit `json:"commits"`
+	ToolVersion    string       `json:"tool_version"`
+	BaseRef        string       `json:"base_ref"`
+	DiffFingerprint string     `json:"diff_fingerprint"`
+	Style          CommitStyle  `json:"style"`
+	Commits        []CommitUnit `json:"commits"`
+}
+
+// DiffFingerprintFromHunks produces a stable hash of all hunk IDs. If the
+// working tree changes, the hunks change, and this fingerprint won't match
+// the cached plan — signaling that the plan is stale.
+func DiffFingerprintFromHunks(hunks []Hunk) string {
+	ids := make([]string, len(hunks))
+	for i, h := range hunks {
+		ids[i] = h.HunkID
+	}
+	sort.Strings(ids)
+	sum := sha256.Sum256([]byte(strings.Join(ids, ",")))
+	return fmt.Sprintf("%x", sum)
 }
 
 // Plan is the generic plan interface that all planner outputs must satisfy.
