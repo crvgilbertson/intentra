@@ -260,12 +260,14 @@ After a successful apply, the cache file is automatically deleted.
 
 **With `--yes`**, Intentra:
 
-1. Checks if the current branch is protected (configurable via `protected_branches`)
-2. Snapshots the current HEAD and index state
-3. Resets the index to HEAD for clean patch application
-4. For each commit: writes a patch file, stages with `git apply --cached`, then `git commit` (optionally with `-S` for GPG signing)
-5. If any step fails: rolls back all commits and restores the index to the snapshot
-6. On success: deletes the cached plan and reports which commits were created
+1. **Pre-flight check**: aborts if the repo is mid-merge, mid-rebase, mid-cherry-pick, mid-bisect, or has unmerged paths
+2. Checks if the current branch is protected (configurable via `protected_branches`)
+3. **Hook detection**: prints an informational warning if husky, pre-commit, or git hooks are detected (suggests `skip_hooks: true` if they cause issues)
+4. Snapshots the current HEAD and index state
+5. Resets the index to HEAD for clean patch application
+6. For each commit: writes a patch file, stages with `git apply --cached`, then `git commit` (optionally with `-S` for GPG signing, `--no-verify` if `skip_hooks`, `--author` if `commit_author` is set)
+7. If any step fails: rolls back all commits and restores the index to the snapshot
+8. On success: deletes the cached plan. If `auto_push` is enabled, pushes to the configured remote (validates the remote exists first, handles `--set-upstream` for new branches)
 
 ### `intentra init`
 
@@ -332,6 +334,10 @@ engine:
     max_commits: 20
     ignore_patterns: []
     sign_commits: false
+    auto_push: false
+    remote_name: origin
+    commit_author: ""
+    skip_hooks: false
 ```
 
 ### Configuration Reference
@@ -357,6 +363,9 @@ engine:
 | `engine` | `ignore_patterns` | []string | `[]` | File glob patterns to exclude from the diff |
 | `engine` | `sign_commits` | bool | `false` | GPG-sign commits with `git commit -S` |
 | `engine` | `auto_push` | bool | `false` | Automatically push to remote after successful apply (handles `--set-upstream` for new branches) |
+| `engine` | `remote_name` | string | `"origin"` | Git remote to push to when `auto_push` is enabled |
+| `engine` | `commit_author` | string | `""` | Override commit author (e.g., `"Name <email>"`) — empty uses git default |
+| `engine` | `skip_hooks` | bool | `false` | Skip pre-commit hooks with `--no-verify` |
 
 If no config file is found, Intentra uses these defaults automatically.
 
