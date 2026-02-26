@@ -1,10 +1,12 @@
 package validators
 
 import (
+	"errors"
 	"strings"
 	"testing"
 
 	"github.com/crvgilbertson/intentra/config"
+	"github.com/crvgilbertson/intentra/engine"
 	enginectx "github.com/crvgilbertson/intentra/engine/context"
 	"github.com/crvgilbertson/intentra/engine/models"
 )
@@ -178,9 +180,13 @@ func TestValidate_MultipleErrors(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected multiple errors")
 	}
-	ve, ok := err.(*ValidationError)
-	if !ok {
-		t.Fatalf("expected *ValidationError, got %T", err)
+	var engineVE *engine.ValidationError
+	if !errors.As(err, &engineVE) {
+		t.Fatalf("expected *engine.ValidationError, got %T", err)
+	}
+	var ve *ValidationError
+	if !errors.As(err, &ve) {
+		t.Fatalf("expected inner *ValidationError, got %T", engineVE.Err)
 	}
 	if len(ve.Errors) < 3 {
 		t.Errorf("expected at least 3 errors, got %d: %v", len(ve.Errors), ve.Errors)
