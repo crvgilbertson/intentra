@@ -24,9 +24,11 @@ type EngineContext struct {
 // It shells out to git for diff and log; this is the only place in the
 // context package that has side effects.
 func BuildContext(ctx context.Context, cfg config.EngineConfig) (EngineContext, error) {
-	trackedDiff, err := gitCommand(ctx, "diff")
+	// Use "diff HEAD" to capture both staged and unstaged changes.
+	// Falls back to empty string for repos with no commits yet.
+	trackedDiff, err := gitCommand(ctx, "diff", "HEAD")
 	if err != nil {
-		return EngineContext{}, fmt.Errorf("collecting git diff: %w", err)
+		trackedDiff = ""
 	}
 
 	untrackedDiff, err := collectUntrackedDiff(ctx)
@@ -36,6 +38,10 @@ func BuildContext(ctx context.Context, cfg config.EngineConfig) (EngineContext, 
 
 	fullDiff := trackedDiff + untrackedDiff
 	hunks := ParseDiff(fullDiff)
+
+	if len(cfg.Engine.IgnorePatterns) > 0 {
+		hunks = filterHunks(hunks, cfg.Engine.IgnorePatterns)
+	}
 
 	if cfg.AI.MaxDiffKB > 0 && len(fullDiff)/1024 > cfg.AI.MaxDiffKB {
 		return EngineContext{}, fmt.Errorf("diff size %d KB exceeds max_diff_kb (%d KB)", len(fullDiff)/1024, cfg.AI.MaxDiffKB)
@@ -143,6 +149,30 @@ func hasBinaryContent(path string) bool {
 	}
 	for _, b := range buf[:n] {
 		if b == 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// filterHunks removes hunks whose file path matches any ignore pattern.
+func filterHunks(hunks []models.Hunk, patterns []string) []models.Hunk {
+	var filtered []models.Hunk
+	for _, h := range hunks {
+		if !shouldIgnore(h.FilePath, patterns) {
+			filtered = append(filtered, h)
+		}
+	}
+	return filtered
+}
+
+func shouldIgnore(filePath string, patterns []string) bool {
+	base := filepath.Base(filePath)
+	for _, pattern := range patterns {
+		if matched, _ := filepath.Match(pattern, filePath); matched {
+			return true
+		}
+		if matched, _ := filepath.Match(pattern, base); matched {
 			return true
 		}
 	}

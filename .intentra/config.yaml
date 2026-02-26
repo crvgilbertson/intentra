@@ -1,0 +1,29 @@
+style:
+    convention: conventional_commits
+    max_subject_len: 256
+    allowed_types:
+        - feat
+        - fix
+        - refactor
+        - perf
+        - docs
+        - test
+        - chore
+    scopes: []
+    scope_required: false
+    body_required: false
+ai:
+    provider: openai
+    model: gpt-4.1
+    temperature: 0.2
+    max_diff_kb: 500
+    max_retries: 1
+    timeout: 120
+engine:
+    strict_mode: true
+    protected_branches:
+        - main
+        - master
+    max_commits: 50
+    ignore_patterns: []
+    sign_commits: false

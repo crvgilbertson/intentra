@@ -117,8 +117,8 @@ func TestCommitPlanner_BuildPlan_Success(t *testing.T) {
 		t.Errorf("expected 1 hunk in c2, got %d", len(cp.Commits[1].Hunks))
 	}
 
-	if cp.ToolVersion != "0.1.0" {
-		t.Errorf("expected tool version 0.1.0, got %s", cp.ToolVersion)
+	if cp.ToolVersion != "0.2.0" {
+		t.Errorf("expected tool version 0.2.0, got %s", cp.ToolVersion)
 	}
 	if cp.BaseRef != "abc123" {
 		t.Errorf("expected base ref abc123, got %s", cp.BaseRef)

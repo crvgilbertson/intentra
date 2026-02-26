@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	enginectx "github.com/crvgilbertson/intentra/engine/context"
 	"github.com/crvgilbertson/intentra/engine/models"
@@ -24,7 +25,17 @@ Rules:
 - Do not over-split: if changes are tightly coupled, keep them in one group.
 - Use stable group IDs: g1, g2, g3, etc.
 - Every hunk_id provided must be assigned to exactly one group. Do not omit any.
-- Order groups by dependency: foundational changes (models, types, interfaces) first, then logic that depends on them, then CLI/entrypoint last. A later group may depend on an earlier group, but never the reverse.`
+- Order groups by dependency: foundational changes (models, types, interfaces) first, then logic that depends on them, then CLI/entrypoint last. A later group may depend on an earlier group, but never the reverse.
+- Create at most %d groups. If changes are numerous, group less critical changes together rather than exceeding the limit.
+- CRITICAL: Before responding, count the total hunk_ids across all your groups and verify it equals the number provided. Missing even one hunk is a failure. Cross-reference against the checklist at the end of the input.`
+
+const rescueSystemPrompt = `You are a code change analyzer. During clustering, some hunks were not assigned to any group.
+Assign each orphaned hunk to the single most appropriate existing group based on its file path, content, and purpose.
+
+Rules:
+- You must assign every orphaned hunk to exactly one existing group.
+- Do not create new groups.
+- Do not omit any hunk.`
 
 const messagingSystemPrompt = `You are a commit message generator following the Conventional Commits specification.
 
@@ -55,6 +66,12 @@ func (p *CommitPlanner) BuildPlan(ctx context.Context, ec enginectx.EngineContex
 		return nil, fmt.Errorf("no hunks to plan")
 	}
 
+	if ec.Config.AI.Timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, time.Duration(ec.Config.AI.Timeout)*time.Second)
+		defer cancel()
+	}
+
 	sortHunks(ec.Hunks)
 
 	clustering, err := p.clusterHunks(ctx, ec)
@@ -75,16 +92,145 @@ func (p *CommitPlanner) BuildPlan(ctx context.Context, ec enginectx.EngineContex
 func (p *CommitPlanner) clusterHunks(ctx context.Context, ec enginectx.EngineContext) (ClusteringResponse, error) {
 	input := buildClusteringInput(ec.Hunks)
 
-	validateClustering := func(cr ClusteringResponse) error {
-		return validateClusteringResponse(cr, ec.Hunks)
+	maxCommits := ec.Config.Engine.MaxCommits
+	if maxCommits <= 0 {
+		maxCommits = 20
+	}
+	sysPrompt := fmt.Sprintf(clusteringSystemPrompt, maxCommits)
+
+	// Only fail on hard errors (duplicates, unknowns). Missing hunks are repaired after.
+	validateHard := func(cr ClusteringResponse) error {
+		if err := validateClusteringHardErrors(cr, ec.Hunks); err != nil {
+			return err
+		}
+		if len(cr.Groups) > maxCommits {
+			return fmt.Errorf("produced %d groups, max allowed is %d", len(cr.Groups), maxCommits)
+		}
+		return nil
 	}
 
-	return reasoning.CallWithRetry[ClusteringResponse](
+	cr, err := reasoning.CallWithRetry[ClusteringResponse](
 		ctx, p.engine,
 		"clustering", ClusteringSchema,
-		clusteringSystemPrompt, input,
-		validateClustering,
+		sysPrompt, input,
+		validateHard,
+		ec.Config.AI.MaxRetries,
 	)
+	if err != nil {
+		return cr, err
+	}
+
+	missing := findMissingHunks(cr, ec.Hunks)
+	if len(missing) > 0 {
+		rescued, err := p.rescueOrphanHunks(ctx, cr, missing, ec.Hunks)
+		if err == nil {
+			cr = rescued
+		} else {
+			cr = repairMissingHunks(cr, ec.Hunks)
+		}
+	}
+
+	return cr, nil
+}
+
+func findMissingHunks(cr ClusteringResponse, hunks []models.Hunk) []models.Hunk {
+	assigned := make(map[string]bool)
+	for _, g := range cr.Groups {
+		for _, hid := range g.HunkIDs {
+			assigned[hid] = true
+		}
+	}
+
+	var missing []models.Hunk
+	for _, h := range hunks {
+		if !assigned[h.HunkID] {
+			missing = append(missing, h)
+		}
+	}
+	return missing
+}
+
+func (p *CommitPlanner) rescueOrphanHunks(
+	ctx context.Context,
+	cr ClusteringResponse,
+	orphans []models.Hunk,
+	allHunks []models.Hunk,
+) (ClusteringResponse, error) {
+	hunkByID := make(map[string]models.Hunk, len(allHunks))
+	for _, h := range allHunks {
+		hunkByID[h.HunkID] = h
+	}
+
+	var sb strings.Builder
+	sb.WriteString("Existing groups:\n")
+	for _, g := range cr.Groups {
+		var files []string
+		seen := make(map[string]bool)
+		for _, hid := range g.HunkIDs {
+			if h, ok := hunkByID[hid]; ok && !seen[h.FilePath] {
+				files = append(files, h.FilePath)
+				seen[h.FilePath] = true
+			}
+		}
+		fmt.Fprintf(&sb, "- %s: %s\n", g.ID, strings.Join(files, ", "))
+	}
+
+	fmt.Fprintf(&sb, "\nOrphaned hunks (%d):\n\n", len(orphans))
+	for _, h := range orphans {
+		fmt.Fprintf(&sb, "- hunk_id: %s\n  file: %s\n  header: %s\n  patch:\n%s\n\n",
+			h.HunkID, h.FilePath, h.Header, h.Patch)
+	}
+
+	groupIDs := make(map[string]bool, len(cr.Groups))
+	for _, g := range cr.Groups {
+		groupIDs[g.ID] = true
+	}
+	orphanIDs := make(map[string]bool, len(orphans))
+	for _, h := range orphans {
+		orphanIDs[h.HunkID] = true
+	}
+
+	validate := func(rr RescueResponse) error {
+		if len(rr.Assignments) != len(orphans) {
+			return fmt.Errorf("expected %d assignments, got %d", len(orphans), len(rr.Assignments))
+		}
+		seen := make(map[string]bool)
+		for _, a := range rr.Assignments {
+			if !orphanIDs[a.HunkID] {
+				return fmt.Errorf("unexpected hunk_id %q", a.HunkID)
+			}
+			if !groupIDs[a.GroupID] {
+				return fmt.Errorf("unknown group_id %q", a.GroupID)
+			}
+			if seen[a.HunkID] {
+				return fmt.Errorf("duplicate hunk_id %q", a.HunkID)
+			}
+			seen[a.HunkID] = true
+		}
+		return nil
+	}
+
+	rr, err := reasoning.CallWithRetry[RescueResponse](
+		ctx, p.engine,
+		"rescue", RescueSchema,
+		rescueSystemPrompt, sb.String(),
+		validate,
+		1,
+	)
+	if err != nil {
+		return cr, fmt.Errorf("rescue call: %w", err)
+	}
+
+	groupIdx := make(map[string]int, len(cr.Groups))
+	for i, g := range cr.Groups {
+		groupIdx[g.ID] = i
+	}
+	for _, a := range rr.Assignments {
+		idx := groupIdx[a.GroupID]
+		cr.Groups[idx].HunkIDs = append(cr.Groups[idx].HunkIDs, a.HunkID)
+	}
+
+	return cr, nil
 }
 
 func (p *CommitPlanner) generateMessages(ctx context.Context, ec enginectx.EngineContext, clustering ClusteringResponse) (MessagingResponse, error) {
@@ -101,16 +247,23 @@ func (p *CommitPlanner) generateMessages(ctx context.Context, ec enginectx.Engin
 		"messaging", MessagingSchema,
 		sysPrompt, input,
 		validateMessaging,
+		ec.Config.AI.MaxRetries,
 	)
 }
 
 func buildClusteringInput(hunks []models.Hunk) string {
 	var sb strings.Builder
-	sb.WriteString("Hunks to cluster:\n\n")
+	fmt.Fprintf(&sb, "Hunks to cluster (%d total — you must assign all %d):\n\n", len(hunks), len(hunks))
 	for _, h := range hunks {
 		fmt.Fprintf(&sb, "- hunk_id: %s\n  file: %s\n  header: %s\n  patch:\n%s\n\n",
 			h.HunkID, h.FilePath, h.Header, h.Patch)
 	}
+
+	fmt.Fprintf(&sb, "\n--- CHECKLIST: all %d hunk IDs (every one must appear in exactly one group) ---\n", len(hunks))
+	for _, h := range hunks {
+		fmt.Fprintf(&sb, "  %s\n", h.HunkID)
+	}
+
 	return sb.String()
 }
 
@@ -145,6 +298,97 @@ func buildMessagingInput(ec enginectx.EngineContext, clustering ClusteringRespon
 	}
 
 	return sb.String()
+}
+
+// validateClusteringHardErrors checks for duplicates and unknown hunks only.
+// Missing hunks are handled by repairMissingHunks rather than treated as errors.
+func validateClusteringHardErrors(cr ClusteringResponse, hunks []models.Hunk) error {
+	expected := make(map[string]bool)
+	for _, h := range hunks {
+		expected[h.HunkID] = true
+	}
+
+	seen := make(map[string]bool)
+	for _, g := range cr.Groups {
+		for _, hid := range g.HunkIDs {
+			if !expected[hid] {
+				return fmt.Errorf("unknown hunk_id %q in group %s", hid, g.ID)
+			}
+			if seen[hid] {
+				return fmt.Errorf("duplicate hunk_id %q across groups", hid)
+			}
+			seen[hid] = true
+		}
+	}
+
+	return nil
+}
+
+// repairMissingHunks assigns any unassigned hunks to the group with the most
+// hunks from the same file. If no file match exists, the largest group is used.
+func repairMissingHunks(cr ClusteringResponse, hunks []models.Hunk) ClusteringResponse {
+	assigned := make(map[string]bool)
+	for _, g := range cr.Groups {
+		for _, hid := range g.HunkIDs {
+			assigned[hid] = true
+		}
+	}
+
+	hunkByID := make(map[string]models.Hunk, len(hunks))
+	for _, h := range hunks {
+		hunkByID[h.HunkID] = h
+	}
+
+	var missing []string
+	for _, h := range hunks {
+		if !assigned[h.HunkID] {
+			missing = append(missing, h.HunkID)
+		}
+	}
+
+	if len(missing) == 0 {
+		return cr
+	}
+
+	// Build group -> file -> count index
+	groupFiles := make([]map[string]int, len(cr.Groups))
+	for i, g := range cr.Groups {
+		groupFiles[i] = make(map[string]int)
+		for _, hid := range g.HunkIDs {
+			if h, ok := hunkByID[hid]; ok {
+				groupFiles[i][h.FilePath]++
+			}
+		}
+	}
+
+	for _, hid := range missing {
+		h := hunkByID[hid]
+		bestGroup := 0
+		bestScore := -1
+
+		for i, fc := range groupFiles {
+			if score := fc[h.FilePath]; score > bestScore {
+				bestScore = score
+				bestGroup = i
+			}
+		}
+
+		// No file match — use the largest group
+		if bestScore <= 0 {
+			maxSize := 0
+			for i, g := range cr.Groups {
+				if len(g.HunkIDs) > maxSize {
+					maxSize = len(g.HunkIDs)
+					bestGroup = i
+				}
+			}
+		}
+
+		cr.Groups[bestGroup].HunkIDs = append(cr.Groups[bestGroup].HunkIDs, hid)
+		groupFiles[bestGroup][h.FilePath]++
+	}
+
+	return cr
 }
 
 func validateClusteringResponse(cr ClusteringResponse, hunks []models.Hunk) error {
@@ -263,8 +507,6 @@ func sortHunks(hunks []models.Hunk) {
 
 // reorderCommitsByDependency sorts commits so that foundational packages
 // (models, types, interfaces) come before higher-level consumers (cmd, main).
-// Each commit gets a priority score based on the minimum package layer of
-// its hunks. Lower scores are applied first.
 func reorderCommitsByDependency(plan *models.CommitPlan, hunks []models.Hunk) {
 	hunkDir := make(map[string]string, len(hunks))
 	for _, h := range hunks {
@@ -291,8 +533,6 @@ func reorderCommitsByDependency(plan *models.CommitPlan, hunks []models.Hunk) {
 	}
 }
 
-// packageLayer assigns a numeric layer to a directory path. Lower layers
-// are more foundational and should be committed first.
 func packageLayer(dir string) int {
 	dir = strings.ToLower(dir)
 

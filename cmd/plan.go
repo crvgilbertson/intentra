@@ -8,16 +8,16 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/crvgilbertson/intentra/cmd/ui"
+	"github.com/crvgilbertson/intentra/config"
 	enginectx "github.com/crvgilbertson/intentra/engine/context"
 	"github.com/crvgilbertson/intentra/engine/models"
 	"github.com/crvgilbertson/intentra/engine/planners"
 	"github.com/crvgilbertson/intentra/engine/reasoning"
 	"github.com/crvgilbertson/intentra/engine/validators"
-
-	"github.com/crvgilbertson/intentra/cmd/ui"
 )
 
-const defaultPlanFile = ".intentra-plan.json"
+var defaultPlanFile = config.PlanPath
 
 var jsonOutput bool
 
@@ -47,15 +47,16 @@ func runPlan(cmd *cobra.Command, args []string) error {
 	}
 
 	ui.Info("Found %d hunk(s) across the diff.\n", len(ec.Hunks))
-	ui.Info("Generating commit plan...\n")
-
 	engine, err := reasoning.NewEngineFromConfig(cfg.AI)
 	if err != nil {
 		return fmt.Errorf("creating reasoning engine: %w", err)
 	}
 	planner := planners.NewCommitPlanner(engine)
 
+	spin := ui.NewSpinner("Generating commit plan...")
+	spin.Start()
 	plan, err := planner.BuildPlan(ctx, ec)
+	spin.Stop()
 	if err != nil {
 		return fmt.Errorf("building plan: %w", err)
 	}
@@ -133,6 +134,9 @@ func uniqueFiles(hunkIDs []string, hunkFileMap map[string]string) []string {
 }
 
 func savePlan(cp *models.CommitPlan) error {
+	if err := config.EnsureDir(); err != nil {
+		return fmt.Errorf("creating %s: %w", config.Dir, err)
+	}
 	data, err := json.MarshalIndent(cp, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshalling plan: %w", err)

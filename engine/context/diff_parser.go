@@ -24,17 +24,43 @@ func ParseDiff(raw string) []models.Hunk {
 		}
 
 		newFile := isNewFileDiff(section)
+		deletedFile := isDeletedFileDiff(section)
+		renamedFrom := extractRenamedFrom(section)
+		oldMode, newMode := extractModeChange(section)
+
 		fileHunks := splitHunks(section)
+
+		if len(fileHunks) == 0 {
+			// Metadata-only change (mode change, rename without content diff).
+			// Create a synthetic hunk so it isn't silently dropped.
+			if (oldMode != "" && newMode != "") || renamedFrom != "" {
+				hunk := models.Hunk{
+					FilePath:    filePath,
+					DeletedFile: deletedFile,
+					RenamedFrom: renamedFrom,
+					OldMode:     oldMode,
+					NewMode:     newMode,
+				}
+				hunk.HunkID = HashHunk(hunk)
+				hunks = append(hunks, hunk)
+			}
+			continue
+		}
+
 		for _, h := range fileHunks {
 			header, patch := splitHunkHeaderAndPatch(h)
 			if header == "" {
 				continue
 			}
 			hunk := models.Hunk{
-				FilePath: filePath,
-				Header:   header,
-				Patch:    patch,
-				NewFile:  newFile,
+				FilePath:    filePath,
+				Header:      header,
+				Patch:       patch,
+				NewFile:     newFile,
+				DeletedFile: deletedFile,
+				RenamedFrom: renamedFrom,
+				OldMode:     oldMode,
+				NewMode:     newMode,
 			}
 			hunk.HunkID = HashHunk(hunk)
 			hunks = append(hunks, hunk)
@@ -115,6 +141,39 @@ func isNewFileDiff(section string) bool {
 		}
 	}
 	return false
+}
+
+// isDeletedFileDiff checks the diff header lines for deleted-file markers.
+func isDeletedFileDiff(section string) bool {
+	for _, line := range headerLines(section) {
+		if strings.HasPrefix(line, "deleted file mode") || line == "+++ /dev/null" {
+			return true
+		}
+	}
+	return false
+}
+
+// extractRenamedFrom returns the original file path for a rename diff.
+func extractRenamedFrom(section string) string {
+	for _, line := range headerLines(section) {
+		if strings.HasPrefix(line, "rename from ") {
+			return strings.TrimPrefix(line, "rename from ")
+		}
+	}
+	return ""
+}
+
+// extractModeChange returns old/new mode strings if a mode change is present.
+func extractModeChange(section string) (oldMode, newMode string) {
+	for _, line := range headerLines(section) {
+		if strings.HasPrefix(line, "old mode ") {
+			oldMode = strings.TrimSpace(strings.TrimPrefix(line, "old mode "))
+		}
+		if strings.HasPrefix(line, "new mode ") {
+			newMode = strings.TrimSpace(strings.TrimPrefix(line, "new mode "))
+		}
+	}
+	return
 }
 
 // headerLines returns the lines before the first @@ hunk marker.

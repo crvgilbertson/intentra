@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"time"
 
 	"github.com/fatih/color"
 	"github.com/mattn/go-colorable"
@@ -45,6 +46,44 @@ func typeColor(t string) *color.Color {
 		return c
 	}
 	return dimC
+}
+
+// Spinner shows an animated elapsed-time indicator during long operations.
+type Spinner struct {
+	msg  string
+	stop chan struct{}
+	done chan struct{}
+}
+
+func NewSpinner(msg string) *Spinner {
+	return &Spinner{msg: msg, stop: make(chan struct{}), done: make(chan struct{})}
+}
+
+func (s *Spinner) Start() {
+	go func() {
+		defer close(s.done)
+		frames := []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
+		start := time.Now()
+		i := 0
+		ticker := time.NewTicker(100 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-s.stop:
+				fmt.Fprintf(stderr, "\r%s\r", strings.Repeat(" ", 70))
+				return
+			case <-ticker.C:
+				elapsed := time.Since(start).Truncate(time.Second)
+				infoC.Fprintf(stderr, "\r  %s %s %s", frames[i%len(frames)], s.msg, elapsed)
+				i++
+			}
+		}
+	}()
+}
+
+func (s *Spinner) Stop() {
+	close(s.stop)
+	<-s.done
 }
 
 func Header(format string, a ...interface{})  { headerTxt.Fprintf(stderr, format, a...) }
