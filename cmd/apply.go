@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -34,6 +36,12 @@ func init() {
 func runApply(cmd *cobra.Command, args []string) error {
 	ctx := context.Background()
 	dryRun := !yesFlag
+
+	if !dryRun {
+		if err := checkProtectedBranch(); err != nil {
+			return err
+		}
+	}
 
 	ec, err := enginectx.BuildContext(ctx, cfg)
 	if err != nil {
@@ -116,4 +124,30 @@ func resolveCommitPlan(ctx context.Context, ec *enginectx.EngineContext) (*model
 	}
 
 	return cp, nil
+}
+
+func checkProtectedBranch() error {
+	branch, err := currentBranch()
+	if err != nil {
+		return nil
+	}
+
+	for _, protected := range cfg.Engine.ProtectedBranches {
+		if strings.EqualFold(branch, protected) {
+			ui.Error("Cannot apply commits to protected branch %q.\n", branch)
+			ui.Info("Create a feature branch first:\n")
+			ui.Dim("  git checkout -b <branch-name>\n")
+			ui.Dim("  intentra apply --yes\n")
+			return fmt.Errorf("branch %q is protected", branch)
+		}
+	}
+	return nil
+}
+
+func currentBranch() (string, error) {
+	out, err := exec.Command("git", "rev-parse", "--abbrev-ref", "HEAD").Output()
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(out)), nil
 }

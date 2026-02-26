@@ -18,7 +18,8 @@ type AIConfig struct {
 }
 
 type EngineSettings struct {
-	StrictMode bool `yaml:"strict_mode"`
+	StrictMode        bool     `yaml:"strict_mode"`
+	ProtectedBranches []string `yaml:"protected_branches"`
 }
 
 type EngineConfig struct {
@@ -42,7 +43,8 @@ func DefaultConfig() EngineConfig {
 			MaxDiffKB:   500,
 		},
 		Engine: EngineSettings{
-			StrictMode: true,
+			StrictMode:        true,
+			ProtectedBranches: []string{"main", "master"},
 		},
 	}
 }
