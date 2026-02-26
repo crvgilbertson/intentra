@@ -90,6 +90,32 @@ func runApply(cmd *cobra.Command, args []string) error {
 	_ = os.Remove(defaultPlanFile)
 
 	ui.Success("\n✓ Successfully applied %d commit(s).\n", len(cp.Commits))
+
+	branch, _ := currentBranch()
+
+	if cfg.Engine.AutoPush && branch != "" {
+		if hasUpstream(branch) {
+			ui.Info("Pushing to origin...\n")
+			if err := pushBranch(); err != nil {
+				ui.Warn("Push failed: %v\n", err)
+				ui.Dim("  You can push manually: git push\n")
+			} else {
+				ui.Success("✓ Pushed to origin.\n")
+			}
+		} else {
+			ui.Info("Pushing and setting upstream...\n")
+			if err := pushBranchWithUpstream(branch); err != nil {
+				ui.Warn("Push failed: %v\n", err)
+				ui.Dim("  You can push manually: git push --set-upstream origin %s\n", branch)
+			} else {
+				ui.Success("✓ Pushed to origin/%s.\n", branch)
+			}
+		}
+	} else if branch != "" && !hasUpstream(branch) {
+		ui.Dim("\nTo push this branch:\n")
+		ui.Dim("  git push --set-upstream origin %s\n", branch)
+	}
+
 	return nil
 }
 
@@ -104,7 +130,7 @@ func resolveCommitPlan(ctx context.Context, ec *enginectx.EngineContext) (*model
 	if err == nil {
 		ui.Warn("Cached plan is stale (diff changed). Re-planning...\n")
 	} else {
-		ui.Info("No cached plan found. Generating commit plan...\n")
+		ui.Info("No cached plan found.\n")
 	}
 
 	engine, err := reasoning.NewEngineFromConfig(cfg.AI)
@@ -157,4 +183,25 @@ func currentBranch() (string, error) {
 		return "", err
 	}
 	return strings.TrimSpace(string(out)), nil
+}
+
+func hasUpstream(branch string) bool {
+	err := exec.Command("git", "rev-parse", "--abbrev-ref", branch+"@{upstream}").Run()
+	return err == nil
+}
+
+func pushBranch() error {
+	out, err := exec.Command("git", "push").CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("%s", strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+func pushBranchWithUpstream(branch string) error {
+	out, err := exec.Command("git", "push", "--set-upstream", "origin", branch).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("%s", strings.TrimSpace(string(out)))
+	}
+	return nil
 }
