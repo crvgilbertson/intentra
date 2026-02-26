@@ -11,6 +11,7 @@ import (
 	enginectx "github.com/crvgilbertson/intentra/engine/context"
 	"github.com/crvgilbertson/intentra/engine/models"
 	"github.com/crvgilbertson/intentra/engine/reasoning"
+	"github.com/crvgilbertson/intentra/internal"
 )
 
 const clusteringSystemPrompt = `You are a code change analyzer. Your task is to group related code changes (hunks) into logical commits.
@@ -237,7 +238,7 @@ func assemblePlan(ec enginectx.EngineContext, clustering ClusteringResponse, mes
 	}
 
 	return models.CommitPlan{
-		ToolVersion:     "0.1.0",
+		ToolVersion:     internal.Version,
 		BaseRef:         ec.BaseRef,
 		DiffFingerprint: models.DiffFingerprintFromHunks(ec.Hunks),
 		Style:           ec.Config.Style,
