@@ -12,6 +12,8 @@ type CommitStyle struct {
 	MaxSubjectLen int      `json:"max_subject_len" yaml:"max_subject_len"`
 	AllowedTypes  []string `json:"allowed_types" yaml:"allowed_types"`
 	Scopes        []string `json:"scopes" yaml:"scopes"`
+	ScopeRequired bool     `json:"scope_required" yaml:"scope_required"`
+	BodyRequired  bool     `json:"body_required" yaml:"body_required"`
 }
 
 type Footer struct {
