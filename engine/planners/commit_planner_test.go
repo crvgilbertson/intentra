@@ -117,8 +117,8 @@ func TestCommitPlanner_BuildPlan_Success(t *testing.T) {
 		t.Errorf("expected 1 hunk in c2, got %d", len(cp.Commits[1].Hunks))
 	}
 
-	if cp.ToolVersion != "0.2.0" {
-		t.Errorf("expected tool version 0.2.0, got %s", cp.ToolVersion)
+	if cp.ToolVersion != "0.3.0" {
+		t.Errorf("expected tool version 0.3.0, got %s", cp.ToolVersion)
 	}
 	if cp.BaseRef != "abc123" {
 		t.Errorf("expected base ref abc123, got %s", cp.BaseRef)
@@ -236,6 +236,63 @@ func TestPackageLayer(t *testing.T) {
 			t.Errorf("packageLayer(%q) = %d, want %d", tt.dir, got, tt.expected)
 		}
 	}
+}
+
+func TestSummarizePatch_NoTruncation(t *testing.T) {
+	patch := "+line1\n+line2\n+line3"
+	got := summarizePatch(patch, 50)
+	if got != patch {
+		t.Errorf("expected no truncation, got %q", got)
+	}
+}
+
+func TestSummarizePatch_Disabled(t *testing.T) {
+	patch := "+line1\n+line2\n+line3"
+	got := summarizePatch(patch, 0)
+	if got != patch {
+		t.Errorf("expected no truncation when disabled, got %q", got)
+	}
+}
+
+func TestSummarizePatch_Truncated(t *testing.T) {
+	var lines []string
+	for i := 0; i < 100; i++ {
+		lines = append(lines, fmt.Sprintf("+line%d", i))
+	}
+	patch := ""
+	for i, l := range lines {
+		if i > 0 {
+			patch += "\n"
+		}
+		patch += l
+	}
+
+	got := summarizePatch(patch, 50)
+	if got == patch {
+		t.Error("expected truncation for 100-line patch with maxLines=50")
+	}
+	if !contains(got, "lines omitted") {
+		t.Errorf("expected omission marker, got %q", got)
+	}
+	if !contains(got, "+line0") {
+		t.Error("expected first lines to be preserved")
+	}
+	if !contains(got, "+line99") {
+		t.Error("expected last lines to be preserved")
+	}
+}
+
+func contains(s, substr string) bool {
+	return len(s) >= len(substr) && (s == substr || len(s) > 0 && containsHelper(s, substr))
+}
+
+func containsHelper(s, substr string) bool {
+	for i := 0; i <= len(s)-len(substr); i++ {
+		if s[i:i+len(substr)] == substr {
+			return true
+		}
+	}
+	return false
 }
 
 func TestValidateMessagingResponse_MissingGroup(t *testing.T) {
