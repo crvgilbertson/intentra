@@ -14,8 +14,10 @@ import (
 
 // GitExecutor applies a CommitPlan by staging hunks and committing.
 type GitExecutor struct {
-	repoDir     string
-	signCommits bool
+	repoDir      string
+	signCommits  bool
+	commitAuthor string
+	skipHooks    bool
 }
 
 func NewGitExecutor(repoDir string) *GitExecutor {
@@ -127,6 +129,12 @@ func (e *GitExecutor) applyCommit(ctx context.Context, commit models.CommitUnit,
 	if e.signCommits {
 		args = append(args, "-S")
 	}
+	if e.skipHooks {
+		args = append(args, "--no-verify")
+	}
+	if e.commitAuthor != "" {
+		args = append(args, "--author", e.commitAuthor)
+	}
 	args = append(args, "-m", commit.FullSubject())
 	if commit.Body != nil && *commit.Body != "" {
 		args = append(args, "-m", *commit.Body)
@@ -136,6 +144,9 @@ func (e *GitExecutor) applyCommit(ctx context.Context, commit models.CommitUnit,
 	}
 
 	if err := e.git(ctx, args...); err != nil {
+		if isHookError(err) {
+			return fmt.Errorf("git commit rejected by pre-commit hook: %w\n  Hint: set skip_hooks: true in .intentra/config.yaml to bypass hooks", err)
+		}
 		return fmt.Errorf("git commit: %w", err)
 	}
 
@@ -174,11 +185,38 @@ type GitExecutorWithHunks struct {
 	hunks []models.Hunk
 }
 
-func NewGitExecutorWithHunks(repoDir string, hunks []models.Hunk, signCommits bool) *GitExecutorWithHunks {
+type ExecutorOptions struct {
+	SignCommits  bool
+	CommitAuthor string
+	SkipHooks    bool
+}
+
+func NewGitExecutorWithHunks(repoDir string, hunks []models.Hunk, opts ExecutorOptions) *GitExecutorWithHunks {
 	return &GitExecutorWithHunks{
-		GitExecutor: &GitExecutor{repoDir: repoDir, signCommits: signCommits},
-		hunks:       hunks,
+		GitExecutor: &GitExecutor{
+			repoDir:      repoDir,
+			signCommits:  opts.SignCommits,
+			commitAuthor: opts.CommitAuthor,
+			skipHooks:    opts.SkipHooks,
+		},
+		hunks: hunks,
 	}
+}
+
+func isHookError(err error) bool {
+	msg := strings.ToLower(err.Error())
+	for _, kw := range []string{"pre-commit", "hook", "husky", "commit-msg"} {
+		if strings.Contains(msg, kw) {
+			return true
+		}
+	}
+	// On some platforms hooks exit non-zero with no descriptive output.
+	// A bare "exit status N:" (nothing after the colon) strongly suggests
+	// a hook rejection rather than a git-internal error.
+	if strings.HasSuffix(strings.TrimSpace(msg), "exit status 1:") {
+		return true
+	}
+	return false
 }
 
 func (e *GitExecutorWithHunks) Execute(ctx context.Context, plan models.Plan, dryRun bool) error {
