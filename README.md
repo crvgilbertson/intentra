@@ -653,6 +653,7 @@ intentra/
     ├── context/                     Git state collection, pure diff parsing
     │   ├── diff_parser.go           Unified diff -> []Hunk (new/deleted/renamed/mode-change aware)
     │   ├── diff_parser_test.go
+    │   ├── diff_parser_fuzz_test.go  Fuzz tests for diff parsing edge cases
     │   ├── hunk_hasher.go           sha256-based stable hunk IDs
     │   ├── hunk_hasher_test.go
     │   └── repo_context.go          BuildContext(): git diff HEAD + untracked + ignore filtering
