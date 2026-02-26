@@ -26,6 +26,7 @@ A deterministic, AI-powered code change reasoning engine. Intentra analyzes your
 - [Development](#development)
   - [Running Tests](#running-tests)
   - [Architecture Boundaries](#architecture-boundaries)
+  - [Architectural Laws](#architectural-laws)
 - [Roadmap](#roadmap)
 - [License](#license)
 
@@ -264,7 +265,8 @@ Usage:
   intentra apply [flags]
 
 Flags:
-      --yes    Actually apply commits (default is dry-run)
+      --yes      Actually apply commits (default is dry-run)
+      --force    Apply even when plan confidence is low
 ```
 
 **Plan caching behavior:**
@@ -351,6 +353,7 @@ The config file is meant to be committed to your repo so team members share the 
 
 ```
       --config string   Path to config file (default ".intentra/config.yaml")
+      --verbose         Enable verbose debug output
       --version         Print version
 ```
 
@@ -625,8 +628,9 @@ Intentra enforces a strict trust model:
 
 ```
 intentra/
-├── main.go                          Entry point
+├── main.go                          Entry point (typed exit codes)
 ├── go.mod
+├── CHANGELOG.md                     Release notes
 │
 ├── .intentra/                       Runtime directory (created by intentra init)
 │   ├── config.yaml                  Project config (commit to repo)
@@ -645,6 +649,9 @@ intentra/
 │   └── ui/
 │       └── styles.go                Colored output, phased spinner, plan summary (fatih/color)
 │
+├── scripts/
+│   └── check-imports.go             CI import boundary checker
+│
 ├── config/                          Configuration loading and defaults
 │   └── config.go                    EngineConfig, YAML load/write, directory helpers
 │
@@ -652,6 +659,7 @@ intentra/
 │   └── version.go                   Version constant
 │
 └── engine/
+    ├── errors.go                    Sentinel error types (ValidationError, GitError, ReasoningError)
     ├── context/                     Git state collection, pure diff parsing
     │   ├── diff_parser.go           Unified diff -> []Hunk (new/deleted/renamed/mode-change aware)
     │   ├── diff_parser_test.go
@@ -729,7 +737,7 @@ All LLM calls are mocked in tests -- no network access required.
 
 ### Architecture Boundaries
 
-These boundaries are enforced by design and must not be violated:
+These boundaries are enforced by design, must not be violated, and are checked by `go run scripts/check-imports.go`:
 
 | Layer | Can call git? | Can call LLM? |
 |-------|:---:|:---:|
@@ -740,6 +748,38 @@ These boundaries are enforced by design and must not be violated:
 | `engine/validators/` | No | No |
 | `engine/executors/` | Yes (read + write) | No |
 | `config/` | No | No |
+
+### Architectural Laws
+
+These are hard constraints, not guidelines. They prevent architectural drift as the codebase grows.
+
+**1. Dependency rules** -- Import direction is strictly one-way:
+
+- `cmd/*` may import `engine/*`, `config/*`, `internal/*`
+- `engine/context/` may call git (via `os/exec`) to read repo state
+- `engine/planners/` may only depend on `engine/models`, `engine/reasoning`, `engine/validators`, and standard library -- no `os/exec`, no `cmd/*`
+- `engine/reasoning/` handles network/LLM only -- no git helpers, no executors
+- `engine/executors/` handles git mutation only -- no LLM/reasoning imports
+
+Forbidden: `engine/executors` importing `engine/reasoning`, `engine/planners` importing `cmd/*`, `engine/reasoning` importing `engine/executors`. Enforced by `scripts/check-imports.go`.
+
+**2. No side effects in planning** -- Planners are pure relative to the repo: they consume `EngineContext` and return a `Plan`. Any capability that needs repo mutation must be an Executor. Planners must never shell out to git.
+
+**3. Schema is the API** -- The `CommitPlan` JSON structure is a versioned contract (`schema_version: "v1"`). Schema changes require: bump the version, add migration/compat logic for cached plans, update validators and tests.
+
+**4. Core must be provider-agnostic** -- `reasoning/factory.go` selects providers based on config. Planner prompts must not rely on provider quirks. Provider implementations are swappable without touching planners.
+
+**5. Adapters at the edge** -- `cmd/gh.go`, `cmd/pr.go`, `cmd/push.go` are GitHub-specific adapters. GitHub-specific logic must not leak into `engine/` packages. When additional VCS backends are added (v0.6+), these will be extracted into an `adapters/` package.
+
+**6. Structured errors** -- Engine packages wrap errors with typed sentinels (`engine.ValidationError`, `engine.GitError`, `engine.ReasoningError`). The CLI layer uses `errors.As` to differentiate exit codes (1=general, 2=validation, 3=git, 4=reasoning).
+
+### Running Architecture Checks
+
+```bash
+go run scripts/check-imports.go
+```
+
+This reads the import graph via `go list -json ./...` and fails if any package imports a denied dependency. Run it in CI to prevent regressions.
 
 ---
 
