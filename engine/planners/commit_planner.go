@@ -15,6 +15,10 @@ import (
 	"github.com/crvgilbertson/intentra/internal"
 )
 
+// ---------------------------------------------------------------------------
+// System prompts
+// ---------------------------------------------------------------------------
+
 const clusteringSystemPrompt = `You are a code change analyzer. Your task is to group related code changes (hunks) into logical commits.
 
 Rules:
@@ -47,6 +51,170 @@ Rules:
 - body is optional; use it only for non-obvious changes.
 - breaking must be true only for breaking changes, and must include a BREAKING CHANGE footer.
 - Generate one commit per group_id provided.`
+
+const mergeSystemPrompt = `You are a code change analyzer. Groups from separate clustering batches need to be reconciled into final commit groups.
+
+Rules:
+- Every source group ID must appear in exactly one merged group.
+- Merge groups from different batches that serve the same logical purpose.
+- Do not over-merge: keep unrelated groups separate.
+- Use stable group IDs: g1, g2, g3, etc.
+- Create at most %d groups.`
+
+// ---------------------------------------------------------------------------
+// Compact ID mapping — replaces 64-char SHA256 hunk IDs with short tokens
+// (h1, h2, …) in LLM prompts to save tokens and improve accuracy.
+// ---------------------------------------------------------------------------
+
+type idMapping struct {
+	toReal    map[string]string
+	toCompact map[string]string
+	validIDs  map[string]bool
+}
+
+func buildIDMapping(hunks []models.Hunk) *idMapping {
+	m := &idMapping{
+		toReal:    make(map[string]string, len(hunks)),
+		toCompact: make(map[string]string, len(hunks)),
+		validIDs:  make(map[string]bool, len(hunks)),
+	}
+	for i, h := range hunks {
+		compact := fmt.Sprintf("h%d", i+1)
+		m.toReal[compact] = h.HunkID
+		m.toCompact[h.HunkID] = compact
+		m.validIDs[compact] = true
+	}
+	return m
+}
+
+func remapClusteringResponse(cr ClusteringResponse, m *idMapping) ClusteringResponse {
+	for i, g := range cr.Groups {
+		remapped := make([]string, 0, len(g.HunkIDs))
+		for _, hid := range g.HunkIDs {
+			if real, ok := m.toReal[hid]; ok {
+				remapped = append(remapped, real)
+			}
+		}
+		cr.Groups[i].HunkIDs = remapped
+	}
+	return cr
+}
+
+func validateCompactIDs(cr ClusteringResponse, validIDs map[string]bool, maxCommits int) error {
+	for _, g := range cr.Groups {
+		for _, hid := range g.HunkIDs {
+			if !validIDs[hid] {
+				return fmt.Errorf("unknown hunk_id %q in group %s", hid, g.ID)
+			}
+		}
+	}
+	if len(cr.Groups) > maxCommits {
+		return fmt.Errorf("produced %d groups, max allowed is %d", len(cr.Groups), maxCommits)
+	}
+	return nil
+}
+
+// ---------------------------------------------------------------------------
+// File-level pre-grouping — collapses per-file hunks into single units
+// so the LLM clusters N files instead of M hunks (M >> N).
+// ---------------------------------------------------------------------------
+
+type fileUnit struct {
+	id       string
+	filePath string
+	hunkIDs  []string
+}
+
+func preGroupByFile(hunks []models.Hunk) []fileUnit {
+	fileMap := make(map[string][]models.Hunk)
+	var fileOrder []string
+	for _, h := range hunks {
+		if _, exists := fileMap[h.FilePath]; !exists {
+			fileOrder = append(fileOrder, h.FilePath)
+		}
+		fileMap[h.FilePath] = append(fileMap[h.FilePath], h)
+	}
+
+	units := make([]fileUnit, 0, len(fileOrder))
+	for i, fp := range fileOrder {
+		hunksForFile := fileMap[fp]
+		hunkIDs := make([]string, 0, len(hunksForFile))
+		for _, h := range hunksForFile {
+			hunkIDs = append(hunkIDs, h.HunkID)
+		}
+		units = append(units, fileUnit{
+			id:       fmt.Sprintf("f%d", i+1),
+			filePath: fp,
+			hunkIDs:  hunkIDs,
+		})
+	}
+	return units
+}
+
+func expandFileUnits(cr ClusteringResponse, units []fileUnit) ClusteringResponse {
+	unitMap := make(map[string]fileUnit, len(units))
+	for _, u := range units {
+		unitMap[u.id] = u
+	}
+	for i, g := range cr.Groups {
+		expanded := make([]string, 0)
+		for _, fid := range g.HunkIDs {
+			if u, ok := unitMap[fid]; ok {
+				expanded = append(expanded, u.hunkIDs...)
+			}
+		}
+		cr.Groups[i].HunkIDs = expanded
+	}
+	return cr
+}
+
+// ---------------------------------------------------------------------------
+// Batch splitting — groups file units by directory proximity.
+// ---------------------------------------------------------------------------
+
+type batchResult struct {
+	cr    ClusteringResponse
+	units []fileUnit
+}
+
+func splitIntoBatches(units []fileUnit, batchSize int) [][]fileUnit {
+	sorted := make([]fileUnit, len(units))
+	copy(sorted, units)
+	sort.Slice(sorted, func(i, j int) bool {
+		di := filepath.ToSlash(filepath.Dir(sorted[i].filePath))
+		dj := filepath.ToSlash(filepath.Dir(sorted[j].filePath))
+		return di < dj
+	})
+
+	var batches [][]fileUnit
+	for i := 0; i < len(sorted); i += batchSize {
+		end := i + batchSize
+		if end > len(sorted) {
+			end = len(sorted)
+		}
+		batches = append(batches, sorted[i:end])
+	}
+	return batches
+}
+
+func concatenateBatchGroups(results []batchResult) ClusteringResponse {
+	var groups []ClusterGroup
+	counter := 1
+	for _, r := range results {
+		for _, g := range r.cr.Groups {
+			groups = append(groups, ClusterGroup{
+				ID:      fmt.Sprintf("g%d", counter),
+				HunkIDs: g.HunkIDs,
+			})
+			counter++
+		}
+	}
+	return ClusteringResponse{Groups: groups}
+}
+
+// ---------------------------------------------------------------------------
+// CommitPlanner
+// ---------------------------------------------------------------------------
 
 // CommitPlanner implements Planner for the commit planning use case.
 type CommitPlanner struct {
@@ -98,24 +266,66 @@ func (p *CommitPlanner) BuildPlan(ctx context.Context, ec enginectx.EngineContex
 	return &plan, nil
 }
 
-func (p *CommitPlanner) clusterHunks(ctx context.Context, ec enginectx.EngineContext) (ClusteringResponse, error) {
-	input := buildClusteringInput(ec.Hunks, ec.Config.AI.MaxHunkLines)
+// ---------------------------------------------------------------------------
+// Clustering — three-tier strategy based on diff size.
+//
+//	<= batchThreshold hunks  → clusterDirect  (hunk-level, compact IDs)
+//	<= batchThreshold files  → clusterByFile  (file-unit level)
+//	> batchThreshold files   → clusterBatched (split → parallel cluster → merge)
+//
+// All paths return a ClusteringResponse containing real hunk IDs.
+// ---------------------------------------------------------------------------
 
+func (p *CommitPlanner) clusterHunks(ctx context.Context, ec enginectx.EngineContext) (ClusteringResponse, error) {
+	batchThreshold := ec.Config.Engine.BatchThreshold
+	if batchThreshold <= 0 {
+		batchThreshold = 40
+	}
 	maxCommits := ec.Config.Engine.MaxCommits
 	if maxCommits <= 0 {
 		maxCommits = 20
 	}
+
+	var cr ClusteringResponse
+	var err error
+
+	units := preGroupByFile(ec.Hunks)
+	switch {
+	case len(ec.Hunks) <= batchThreshold:
+		cr, err = p.clusterDirect(ctx, ec, maxCommits)
+	case len(units) <= batchThreshold:
+		p.progress(fmt.Sprintf("File-level clustering (%d files from %d hunks)...", len(units), len(ec.Hunks)))
+		cr, err = p.clusterByFile(ctx, ec, units, maxCommits)
+	default:
+		p.progress(fmt.Sprintf("Batched clustering (%d files)...", len(units)))
+		cr, err = p.clusterBatched(ctx, ec, units, batchThreshold, maxCommits)
+	}
+	if err != nil {
+		return cr, err
+	}
+
+	cr = deduplicateGroups(cr)
+
+	missing := findMissingHunks(cr, ec.Hunks)
+	if len(missing) > 0 {
+		rescued, rescueErr := p.rescueOrphanHunks(ctx, cr, missing, ec.Hunks)
+		if rescueErr == nil {
+			cr = rescued
+		} else {
+			cr = repairMissingHunks(cr, ec.Hunks)
+		}
+	}
+
+	return cr, nil
+}
+
+// clusterDirect clusters hunks directly with compact prompt IDs.
+func (p *CommitPlanner) clusterDirect(ctx context.Context, ec enginectx.EngineContext, maxCommits int) (ClusteringResponse, error) {
+	input, idMap := buildClusteringInput(ec.Hunks, ec.Config.AI.MaxHunkLines)
 	sysPrompt := fmt.Sprintf(clusteringSystemPrompt, maxCommits)
 
-	// Only fail on hard errors (duplicates, unknowns). Missing hunks are repaired after.
 	validateHard := func(cr ClusteringResponse) error {
-		if err := validateClusteringHardErrors(cr, ec.Hunks); err != nil {
-			return err
-		}
-		if len(cr.Groups) > maxCommits {
-			return fmt.Errorf("produced %d groups, max allowed is %d", len(cr.Groups), maxCommits)
-		}
-		return nil
+		return validateCompactIDs(cr, idMap.validIDs, maxCommits)
 	}
 
 	cr, err := reasoning.CallWithRetry[ClusteringResponse](
@@ -129,18 +339,200 @@ func (p *CommitPlanner) clusterHunks(ctx context.Context, ec enginectx.EngineCon
 		return cr, err
 	}
 
-	missing := findMissingHunks(cr, ec.Hunks)
-	if len(missing) > 0 {
-		rescued, err := p.rescueOrphanHunks(ctx, cr, missing, ec.Hunks)
-		if err == nil {
-			cr = rescued
-		} else {
-			cr = repairMissingHunks(cr, ec.Hunks)
+	return remapClusteringResponse(cr, idMap), nil
+}
+
+// clusterByFile groups hunks by file, then clusters file units.
+func (p *CommitPlanner) clusterByFile(ctx context.Context, ec enginectx.EngineContext, units []fileUnit, maxCommits int) (ClusteringResponse, error) {
+	input := buildFileUnitClusteringInput(units, ec.Hunks, ec.Config.AI.MaxHunkLines)
+	sysPrompt := fmt.Sprintf(clusteringSystemPrompt, maxCommits)
+
+	validIDs := make(map[string]bool, len(units))
+	for _, u := range units {
+		validIDs[u.id] = true
+	}
+
+	validateHard := func(cr ClusteringResponse) error {
+		return validateCompactIDs(cr, validIDs, maxCommits)
+	}
+
+	cr, err := reasoning.CallWithRetry[ClusteringResponse](
+		ctx, p.engine,
+		"clustering", ClusteringSchema,
+		sysPrompt, input,
+		validateHard,
+		ec.Config.AI.MaxRetries,
+	)
+	if err != nil {
+		return cr, err
+	}
+
+	return expandFileUnits(cr, units), nil
+}
+
+// clusterBatched splits file units into directory-proximate batches,
+// clusters each independently, then merges groups across batches.
+func (p *CommitPlanner) clusterBatched(ctx context.Context, ec enginectx.EngineContext, units []fileUnit, batchSize int, maxCommits int) (ClusteringResponse, error) {
+	batches := splitIntoBatches(units, batchSize)
+
+	var results []batchResult
+	for batchIdx, batch := range batches {
+		p.progress(fmt.Sprintf("Clustering batch %d/%d (%d files)...", batchIdx+1, len(batches), len(batch)))
+		input := buildFileUnitClusteringInput(batch, ec.Hunks, ec.Config.AI.MaxHunkLines)
+
+		batchMaxCommits := (maxCommits*len(batch))/len(units) + 1
+		if batchMaxCommits < 2 {
+			batchMaxCommits = 2
+		}
+		if batchMaxCommits > maxCommits {
+			batchMaxCommits = maxCommits
+		}
+
+		sysPrompt := fmt.Sprintf(clusteringSystemPrompt, batchMaxCommits)
+
+		validIDs := make(map[string]bool, len(batch))
+		for _, u := range batch {
+			validIDs[u.id] = true
+		}
+
+		validateHard := func(cr ClusteringResponse) error {
+			return validateCompactIDs(cr, validIDs, batchMaxCommits)
+		}
+
+		cr, err := reasoning.CallWithRetry[ClusteringResponse](
+			ctx, p.engine,
+			"clustering", ClusteringSchema,
+			sysPrompt, input,
+			validateHard,
+			ec.Config.AI.MaxRetries,
+		)
+		if err != nil {
+			return ClusteringResponse{}, fmt.Errorf("batch %d/%d: %w", batchIdx+1, len(batches), err)
+		}
+
+		prefix := fmt.Sprintf("b%d", batchIdx+1)
+		for i, g := range cr.Groups {
+			cr.Groups[i].ID = prefix + g.ID
+		}
+
+		results = append(results, batchResult{cr: cr, units: batch})
+	}
+
+	if len(results) == 1 {
+		return expandFileUnits(results[0].cr, results[0].units), nil
+	}
+
+	p.progress(fmt.Sprintf("Merging %d batches...", len(results)))
+	merged, err := p.mergeBatchGroups(ctx, ec, results, maxCommits)
+	if err != nil {
+		merged = concatenateBatchGroups(results)
+	}
+
+	allUnits := make([]fileUnit, 0, len(units))
+	for _, r := range results {
+		allUnits = append(allUnits, r.units...)
+	}
+	return expandFileUnits(merged, allUnits), nil
+}
+
+// mergeBatchGroups asks the LLM to reconcile groups across batches.
+func (p *CommitPlanner) mergeBatchGroups(ctx context.Context, ec enginectx.EngineContext, results []batchResult, maxCommits int) (ClusteringResponse, error) {
+	unitByID := make(map[string]fileUnit)
+	for _, r := range results {
+		for _, u := range r.units {
+			unitByID[u.id] = u
 		}
 	}
 
-	return cr, nil
+	var sb strings.Builder
+	var allGroupIDs []string
+
+	sb.WriteString("Batch groups to reconcile:\n\n")
+	for _, r := range results {
+		for _, g := range r.cr.Groups {
+			files := make(map[string]bool)
+			for _, fid := range g.HunkIDs {
+				if u, ok := unitByID[fid]; ok {
+					files[u.filePath] = true
+				}
+			}
+			var fileList []string
+			for f := range files {
+				fileList = append(fileList, f)
+			}
+			sort.Strings(fileList)
+			fmt.Fprintf(&sb, "- %s: %s\n", g.ID, strings.Join(fileList, ", "))
+			allGroupIDs = append(allGroupIDs, g.ID)
+		}
+	}
+
+	sysPrompt := fmt.Sprintf(mergeSystemPrompt, maxCommits)
+
+	validGroupIDs := make(map[string]bool, len(allGroupIDs))
+	for _, gid := range allGroupIDs {
+		validGroupIDs[gid] = true
+	}
+
+	validate := func(mr MergeResponse) error {
+		seen := make(map[string]bool)
+		for _, mg := range mr.Groups {
+			for _, sg := range mg.SourceGroups {
+				if !validGroupIDs[sg] {
+					return fmt.Errorf("unknown source group %q", sg)
+				}
+				if seen[sg] {
+					return fmt.Errorf("source group %q assigned to multiple merged groups", sg)
+				}
+				seen[sg] = true
+			}
+		}
+		for _, gid := range allGroupIDs {
+			if !seen[gid] {
+				return fmt.Errorf("source group %q not assigned to any merged group", gid)
+			}
+		}
+		if len(mr.Groups) > maxCommits {
+			return fmt.Errorf("produced %d groups, max allowed is %d", len(mr.Groups), maxCommits)
+		}
+		return nil
+	}
+
+	mr, err := reasoning.CallWithRetry[MergeResponse](
+		ctx, p.engine,
+		"merge", MergeSchema,
+		sysPrompt, sb.String(),
+		validate,
+		ec.Config.AI.MaxRetries,
+	)
+	if err != nil {
+		return ClusteringResponse{}, err
+	}
+
+	sourceHunks := make(map[string][]string)
+	for _, r := range results {
+		for _, g := range r.cr.Groups {
+			sourceHunks[g.ID] = g.HunkIDs
+		}
+	}
+
+	var groups []ClusterGroup
+	for _, mg := range mr.Groups {
+		var combined []string
+		for _, sg := range mg.SourceGroups {
+			combined = append(combined, sourceHunks[sg]...)
+		}
+		groups = append(groups, ClusterGroup{
+			ID:      mg.ID,
+			HunkIDs: combined,
+		})
+	}
+
+	return ClusteringResponse{Groups: groups}, nil
 }
+
+// ---------------------------------------------------------------------------
+// Rescue — assigns orphaned hunks to existing groups.
+// ---------------------------------------------------------------------------
 
 func findMissingHunks(cr ClusteringResponse, hunks []models.Hunk) []models.Hunk {
 	assigned := make(map[string]bool)
@@ -165,6 +557,18 @@ func (p *CommitPlanner) rescueOrphanHunks(
 	orphans []models.Hunk,
 	allHunks []models.Hunk,
 ) (ClusteringResponse, error) {
+	orphanIDMap := &idMapping{
+		toReal:    make(map[string]string, len(orphans)),
+		toCompact: make(map[string]string, len(orphans)),
+		validIDs:  make(map[string]bool, len(orphans)),
+	}
+	for i, h := range orphans {
+		compact := fmt.Sprintf("o%d", i+1)
+		orphanIDMap.toReal[compact] = h.HunkID
+		orphanIDMap.toCompact[h.HunkID] = compact
+		orphanIDMap.validIDs[compact] = true
+	}
+
 	hunkByID := make(map[string]models.Hunk, len(allHunks))
 	for _, h := range allHunks {
 		hunkByID[h.HunkID] = h
@@ -186,17 +590,14 @@ func (p *CommitPlanner) rescueOrphanHunks(
 
 	fmt.Fprintf(&sb, "\nOrphaned hunks (%d):\n\n", len(orphans))
 	for _, h := range orphans {
+		compact := orphanIDMap.toCompact[h.HunkID]
 		fmt.Fprintf(&sb, "- hunk_id: %s\n  file: %s\n  header: %s\n  patch:\n%s\n\n",
-			h.HunkID, h.FilePath, h.Header, h.Patch)
+			compact, h.FilePath, h.Header, h.Patch)
 	}
 
 	groupIDs := make(map[string]bool, len(cr.Groups))
 	for _, g := range cr.Groups {
 		groupIDs[g.ID] = true
-	}
-	orphanIDs := make(map[string]bool, len(orphans))
-	for _, h := range orphans {
-		orphanIDs[h.HunkID] = true
 	}
 
 	validate := func(rr RescueResponse) error {
@@ -205,7 +606,7 @@ func (p *CommitPlanner) rescueOrphanHunks(
 		}
 		seen := make(map[string]bool)
 		for _, a := range rr.Assignments {
-			if !orphanIDs[a.HunkID] {
+			if !orphanIDMap.validIDs[a.HunkID] {
 				return fmt.Errorf("unexpected hunk_id %q", a.HunkID)
 			}
 			if !groupIDs[a.GroupID] {
@@ -235,12 +636,17 @@ func (p *CommitPlanner) rescueOrphanHunks(
 		groupIdx[g.ID] = i
 	}
 	for _, a := range rr.Assignments {
+		realID := orphanIDMap.toReal[a.HunkID]
 		idx := groupIdx[a.GroupID]
-		cr.Groups[idx].HunkIDs = append(cr.Groups[idx].HunkIDs, a.HunkID)
+		cr.Groups[idx].HunkIDs = append(cr.Groups[idx].HunkIDs, realID)
 	}
 
 	return cr, nil
 }
+
+// ---------------------------------------------------------------------------
+// Messaging
+// ---------------------------------------------------------------------------
 
 func (p *CommitPlanner) generateMessages(ctx context.Context, ec enginectx.EngineContext, clustering ClusteringResponse) (MessagingResponse, error) {
 	input := buildMessagingInput(ec, clustering)
@@ -260,27 +666,60 @@ func (p *CommitPlanner) generateMessages(ctx context.Context, ec enginectx.Engin
 	)
 }
 
-func buildClusteringInput(hunks []models.Hunk, maxHunkLines int) string {
+// ---------------------------------------------------------------------------
+// Input builders
+// ---------------------------------------------------------------------------
+
+func buildClusteringInput(hunks []models.Hunk, maxHunkLines int) (string, *idMapping) {
+	idMap := buildIDMapping(hunks)
+
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "Hunks to cluster (%d total — you must assign all %d):\n\n", len(hunks), len(hunks))
 	for _, h := range hunks {
+		compact := idMap.toCompact[h.HunkID]
 		patch := summarizePatch(h.Patch, maxHunkLines)
 		fmt.Fprintf(&sb, "- hunk_id: %s\n  file: %s\n  header: %s\n  patch:\n%s\n\n",
-			h.HunkID, h.FilePath, h.Header, patch)
+			compact, h.FilePath, h.Header, patch)
 	}
 
 	fmt.Fprintf(&sb, "\n--- CHECKLIST: all %d hunk IDs (every one must appear in exactly one group) ---\n", len(hunks))
 	for _, h := range hunks {
-		fmt.Fprintf(&sb, "  %s\n", h.HunkID)
+		fmt.Fprintf(&sb, "  %s\n", idMap.toCompact[h.HunkID])
+	}
+
+	return sb.String(), idMap
+}
+
+func buildFileUnitClusteringInput(units []fileUnit, hunks []models.Hunk, maxHunkLines int) string {
+	hunkMap := make(map[string]models.Hunk, len(hunks))
+	for _, h := range hunks {
+		hunkMap[h.HunkID] = h
+	}
+
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "File units to cluster (%d total — you must assign all %d):\n\n", len(units), len(units))
+	for _, u := range units {
+		fmt.Fprintf(&sb, "- hunk_id: %s\n  file: %s\n  changes: %d hunk(s)\n", u.id, u.filePath, len(u.hunkIDs))
+		for _, hid := range u.hunkIDs {
+			if h, ok := hunkMap[hid]; ok {
+				patch := summarizePatch(h.Patch, maxHunkLines)
+				fmt.Fprintf(&sb, "  header: %s\n  patch:\n%s\n", h.Header, patch)
+			}
+		}
+		sb.WriteString("\n")
+	}
+
+	fmt.Fprintf(&sb, "\n--- CHECKLIST: all %d IDs (every one must appear in exactly one group) ---\n", len(units))
+	for _, u := range units {
+		fmt.Fprintf(&sb, "  %s\n", u.id)
 	}
 
 	return sb.String()
 }
 
 // summarizePatch truncates a patch to the first and last keepLines lines
-// if it exceeds maxLines. This reduces token usage while preserving
-// enough context for the LLM to cluster correctly.
-// maxLines <= 0 disables truncation.
+// if it exceeds maxLines, reducing token usage while preserving enough
+// context for the LLM to cluster correctly. maxLines <= 0 disables truncation.
 func summarizePatch(patch string, maxLines int) string {
 	if maxLines <= 0 {
 		return patch
@@ -311,6 +750,8 @@ func buildMessagingInput(ec enginectx.EngineContext, clustering ClusteringRespon
 		hunkMap[h.HunkID] = h
 	}
 
+	maxLines := ec.Config.AI.MaxHunkLines
+
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "Allowed types: %s\n", strings.Join(ec.Config.Style.AllowedTypes, ", "))
 	if len(ec.Config.Style.Scopes) > 0 {
@@ -322,7 +763,8 @@ func buildMessagingInput(ec enginectx.EngineContext, clustering ClusteringRespon
 		fmt.Fprintf(&sb, "Group %s:\n", g.ID)
 		for _, hid := range g.HunkIDs {
 			if h, ok := hunkMap[hid]; ok {
-				fmt.Fprintf(&sb, "  - file: %s, header: %s\n    patch:\n%s\n", h.FilePath, h.Header, h.Patch)
+				patch := summarizePatch(h.Patch, maxLines)
+				fmt.Fprintf(&sb, "  - file: %s, header: %s\n    patch:\n%s\n", h.FilePath, h.Header, patch)
 			}
 		}
 		sb.WriteString("\n")
@@ -338,32 +780,41 @@ func buildMessagingInput(ec enginectx.EngineContext, clustering ClusteringRespon
 	return sb.String()
 }
 
-// validateClusteringHardErrors checks for duplicates and unknown hunks only.
-// Missing hunks are handled by repairMissingHunks rather than treated as errors.
+// ---------------------------------------------------------------------------
+// Validation
+// ---------------------------------------------------------------------------
+
+// validateClusteringHardErrors checks for unknown hunks only (kept for tests).
 func validateClusteringHardErrors(cr ClusteringResponse, hunks []models.Hunk) error {
 	expected := make(map[string]bool)
 	for _, h := range hunks {
 		expected[h.HunkID] = true
 	}
-
-	seen := make(map[string]bool)
 	for _, g := range cr.Groups {
 		for _, hid := range g.HunkIDs {
 			if !expected[hid] {
 				return fmt.Errorf("unknown hunk_id %q in group %s", hid, g.ID)
 			}
-			if seen[hid] {
-				return fmt.Errorf("duplicate hunk_id %q across groups", hid)
-			}
-			seen[hid] = true
 		}
 	}
-
 	return nil
 }
 
-// repairMissingHunks assigns any unassigned hunks to the group with the most
-// hunks from the same file. If no file match exists, the largest group is used.
+func deduplicateGroups(cr ClusteringResponse) ClusteringResponse {
+	seen := make(map[string]bool)
+	for i, g := range cr.Groups {
+		deduped := make([]string, 0, len(g.HunkIDs))
+		for _, hid := range g.HunkIDs {
+			if !seen[hid] {
+				seen[hid] = true
+				deduped = append(deduped, hid)
+			}
+		}
+		cr.Groups[i].HunkIDs = deduped
+	}
+	return cr
+}
+
 func repairMissingHunks(cr ClusteringResponse, hunks []models.Hunk) ClusteringResponse {
 	assigned := make(map[string]bool)
 	for _, g := range cr.Groups {
@@ -388,7 +839,6 @@ func repairMissingHunks(cr ClusteringResponse, hunks []models.Hunk) ClusteringRe
 		return cr
 	}
 
-	// Build group -> file -> count index
 	groupFiles := make([]map[string]int, len(cr.Groups))
 	for i, g := range cr.Groups {
 		groupFiles[i] = make(map[string]int)
@@ -411,7 +861,6 @@ func repairMissingHunks(cr ClusteringResponse, hunks []models.Hunk) ClusteringRe
 			}
 		}
 
-		// No file match — use the largest group
 		if bestScore <= 0 {
 			maxSize := 0
 			for i, g := range cr.Groups {
@@ -488,6 +937,10 @@ func validateMessagingResponse(mr MessagingResponse, clustering ClusteringRespon
 	return nil
 }
 
+// ---------------------------------------------------------------------------
+// Plan assembly
+// ---------------------------------------------------------------------------
+
 func assemblePlan(ec enginectx.EngineContext, clustering ClusteringResponse, messaging MessagingResponse) models.CommitPlan {
 	groupHunks := make(map[string][]string)
 	for _, g := range clustering.Groups {
@@ -533,6 +986,10 @@ func assemblePlan(ec enginectx.EngineContext, clustering ClusteringResponse, mes
 		Commits:         commits,
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Sorting & ordering
+// ---------------------------------------------------------------------------
 
 func sortHunks(hunks []models.Hunk) {
 	sort.Slice(hunks, func(i, j int) bool {

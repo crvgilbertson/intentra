@@ -58,11 +58,14 @@ func mustJSON(v interface{}) json.RawMessage {
 	return b
 }
 
+// After sortHunks: aaa (auth.go @@-1), bbb (auth.go @@-10), ccc (ui.go @@-1)
+// Compact IDs: h1=aaa, h2=bbb, h3=ccc
+
 func TestCommitPlanner_BuildPlan_Success(t *testing.T) {
 	clusterResp := ClusteringResponse{
 		Groups: []ClusterGroup{
-			{ID: "g1", HunkIDs: []string{"aaa", "bbb"}},
-			{ID: "g2", HunkIDs: []string{"ccc"}},
+			{ID: "g1", HunkIDs: []string{"h1", "h2"}},
+			{ID: "g2", HunkIDs: []string{"h3"}},
 		},
 	}
 	scope1 := "auth"
@@ -310,5 +313,312 @@ func TestValidateMessagingResponse_MissingGroup(t *testing.T) {
 	err := validateMessagingResponse(mr, clustering, 72)
 	if err == nil {
 		t.Fatal("expected error for missing group g2")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// New tests for scaling layers
+// ---------------------------------------------------------------------------
+
+func TestBuildIDMapping(t *testing.T) {
+	hunks := testHunks()
+	sortHunks(hunks) // aaa, bbb, ccc
+	m := buildIDMapping(hunks)
+
+	if m.toCompact["aaa"] != "h1" {
+		t.Errorf("expected aaa -> h1, got %s", m.toCompact["aaa"])
+	}
+	if m.toCompact["bbb"] != "h2" {
+		t.Errorf("expected bbb -> h2, got %s", m.toCompact["bbb"])
+	}
+	if m.toCompact["ccc"] != "h3" {
+		t.Errorf("expected ccc -> h3, got %s", m.toCompact["ccc"])
+	}
+
+	if m.toReal["h1"] != "aaa" {
+		t.Errorf("expected h1 -> aaa, got %s", m.toReal["h1"])
+	}
+
+	if !m.validIDs["h1"] || !m.validIDs["h2"] || !m.validIDs["h3"] {
+		t.Error("expected h1, h2, h3 to be valid")
+	}
+	if m.validIDs["h4"] {
+		t.Error("h4 should not be valid")
+	}
+}
+
+func TestRemapClusteringResponse(t *testing.T) {
+	hunks := testHunks()
+	sortHunks(hunks)
+	m := buildIDMapping(hunks)
+
+	cr := ClusteringResponse{
+		Groups: []ClusterGroup{
+			{ID: "g1", HunkIDs: []string{"h1", "h2"}},
+			{ID: "g2", HunkIDs: []string{"h3"}},
+		},
+	}
+
+	remapped := remapClusteringResponse(cr, m)
+
+	if remapped.Groups[0].HunkIDs[0] != "aaa" || remapped.Groups[0].HunkIDs[1] != "bbb" {
+		t.Errorf("g1 remap failed: %v", remapped.Groups[0].HunkIDs)
+	}
+	if remapped.Groups[1].HunkIDs[0] != "ccc" {
+		t.Errorf("g2 remap failed: %v", remapped.Groups[1].HunkIDs)
+	}
+}
+
+func TestRemapClusteringResponse_UnknownDropped(t *testing.T) {
+	hunks := testHunks()
+	sortHunks(hunks)
+	m := buildIDMapping(hunks)
+
+	cr := ClusteringResponse{
+		Groups: []ClusterGroup{
+			{ID: "g1", HunkIDs: []string{"h1", "h999", "h2"}},
+		},
+	}
+
+	remapped := remapClusteringResponse(cr, m)
+	if len(remapped.Groups[0].HunkIDs) != 2 {
+		t.Errorf("expected 2 hunks after dropping unknown, got %d", len(remapped.Groups[0].HunkIDs))
+	}
+}
+
+func TestValidateCompactIDs_Valid(t *testing.T) {
+	valid := map[string]bool{"h1": true, "h2": true, "h3": true}
+	cr := ClusteringResponse{
+		Groups: []ClusterGroup{
+			{ID: "g1", HunkIDs: []string{"h1", "h2"}},
+			{ID: "g2", HunkIDs: []string{"h3"}},
+		},
+	}
+	if err := validateCompactIDs(cr, valid, 10); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestValidateCompactIDs_Unknown(t *testing.T) {
+	valid := map[string]bool{"h1": true, "h2": true}
+	cr := ClusteringResponse{
+		Groups: []ClusterGroup{
+			{ID: "g1", HunkIDs: []string{"h1", "h99"}},
+		},
+	}
+	if err := validateCompactIDs(cr, valid, 10); err == nil {
+		t.Fatal("expected error for unknown h99")
+	}
+}
+
+func TestValidateCompactIDs_TooManyGroups(t *testing.T) {
+	valid := map[string]bool{"h1": true}
+	cr := ClusteringResponse{
+		Groups: []ClusterGroup{
+			{ID: "g1", HunkIDs: []string{"h1"}},
+			{ID: "g2", HunkIDs: []string{}},
+		},
+	}
+	if err := validateCompactIDs(cr, valid, 1); err == nil {
+		t.Fatal("expected error for exceeding max groups")
+	}
+}
+
+func TestPreGroupByFile(t *testing.T) {
+	hunks := []models.Hunk{
+		{HunkID: "a1", FilePath: "auth.go"},
+		{HunkID: "a2", FilePath: "auth.go"},
+		{HunkID: "b1", FilePath: "ui.go"},
+		{HunkID: "c1", FilePath: "config.go"},
+	}
+
+	units := preGroupByFile(hunks)
+
+	if len(units) != 3 {
+		t.Fatalf("expected 3 file units, got %d", len(units))
+	}
+
+	if units[0].filePath != "auth.go" || len(units[0].hunkIDs) != 2 {
+		t.Errorf("first unit: %s with %d hunks", units[0].filePath, len(units[0].hunkIDs))
+	}
+	if units[0].id != "f1" {
+		t.Errorf("expected f1, got %s", units[0].id)
+	}
+	if units[1].filePath != "ui.go" || units[1].id != "f2" {
+		t.Errorf("second unit: %s %s", units[1].filePath, units[1].id)
+	}
+	if units[2].filePath != "config.go" || units[2].id != "f3" {
+		t.Errorf("third unit: %s %s", units[2].filePath, units[2].id)
+	}
+}
+
+func TestExpandFileUnits(t *testing.T) {
+	units := []fileUnit{
+		{id: "f1", filePath: "auth.go", hunkIDs: []string{"a1", "a2"}},
+		{id: "f2", filePath: "ui.go", hunkIDs: []string{"b1"}},
+	}
+
+	cr := ClusteringResponse{
+		Groups: []ClusterGroup{
+			{ID: "g1", HunkIDs: []string{"f1"}},
+			{ID: "g2", HunkIDs: []string{"f2"}},
+		},
+	}
+
+	expanded := expandFileUnits(cr, units)
+
+	if len(expanded.Groups[0].HunkIDs) != 2 {
+		t.Errorf("expected 2 hunks in g1, got %d", len(expanded.Groups[0].HunkIDs))
+	}
+	if expanded.Groups[0].HunkIDs[0] != "a1" || expanded.Groups[0].HunkIDs[1] != "a2" {
+		t.Errorf("g1 expansion wrong: %v", expanded.Groups[0].HunkIDs)
+	}
+	if len(expanded.Groups[1].HunkIDs) != 1 || expanded.Groups[1].HunkIDs[0] != "b1" {
+		t.Errorf("g2 expansion wrong: %v", expanded.Groups[1].HunkIDs)
+	}
+}
+
+func TestExpandFileUnits_MixedGroups(t *testing.T) {
+	units := []fileUnit{
+		{id: "f1", filePath: "a.go", hunkIDs: []string{"h1"}},
+		{id: "f2", filePath: "b.go", hunkIDs: []string{"h2", "h3"}},
+		{id: "f3", filePath: "c.go", hunkIDs: []string{"h4"}},
+	}
+
+	cr := ClusteringResponse{
+		Groups: []ClusterGroup{
+			{ID: "g1", HunkIDs: []string{"f1", "f3"}},
+			{ID: "g2", HunkIDs: []string{"f2"}},
+		},
+	}
+
+	expanded := expandFileUnits(cr, units)
+
+	if len(expanded.Groups[0].HunkIDs) != 2 {
+		t.Errorf("expected 2 hunks in g1 (f1+f3), got %d", len(expanded.Groups[0].HunkIDs))
+	}
+	if len(expanded.Groups[1].HunkIDs) != 2 {
+		t.Errorf("expected 2 hunks in g2 (f2), got %d", len(expanded.Groups[1].HunkIDs))
+	}
+}
+
+func TestSplitIntoBatches(t *testing.T) {
+	units := []fileUnit{
+		{id: "f1", filePath: "cmd/a.go"},
+		{id: "f2", filePath: "cmd/b.go"},
+		{id: "f3", filePath: "engine/c.go"},
+		{id: "f4", filePath: "engine/d.go"},
+		{id: "f5", filePath: "engine/e.go"},
+	}
+
+	batches := splitIntoBatches(units, 3)
+
+	if len(batches) != 2 {
+		t.Fatalf("expected 2 batches, got %d", len(batches))
+	}
+	if len(batches[0]) != 3 {
+		t.Errorf("first batch: expected 3, got %d", len(batches[0]))
+	}
+	if len(batches[1]) != 2 {
+		t.Errorf("second batch: expected 2, got %d", len(batches[1]))
+	}
+}
+
+func TestSplitIntoBatches_DirectoryProximity(t *testing.T) {
+	units := []fileUnit{
+		{id: "f1", filePath: "z/file.go"},
+		{id: "f2", filePath: "a/file.go"},
+		{id: "f3", filePath: "a/other.go"},
+		{id: "f4", filePath: "m/file.go"},
+	}
+
+	batches := splitIntoBatches(units, 2)
+
+	if len(batches) != 2 {
+		t.Fatalf("expected 2 batches, got %d", len(batches))
+	}
+
+	// After sorting by dir: a/, a/, m/, z/ → batch 1 = [a,a], batch 2 = [m,z]
+	for _, u := range batches[0] {
+		if u.filePath != "a/file.go" && u.filePath != "a/other.go" {
+			t.Errorf("expected 'a/' directory files in first batch, got %s", u.filePath)
+		}
+	}
+}
+
+func TestConcatenateBatchGroups(t *testing.T) {
+	results := []batchResult{
+		{cr: ClusteringResponse{Groups: []ClusterGroup{
+			{ID: "b1g1", HunkIDs: []string{"f1"}},
+			{ID: "b1g2", HunkIDs: []string{"f2"}},
+		}}},
+		{cr: ClusteringResponse{Groups: []ClusterGroup{
+			{ID: "b2g1", HunkIDs: []string{"f3"}},
+		}}},
+	}
+
+	merged := concatenateBatchGroups(results)
+
+	if len(merged.Groups) != 3 {
+		t.Fatalf("expected 3 groups, got %d", len(merged.Groups))
+	}
+	if merged.Groups[0].ID != "g1" || merged.Groups[1].ID != "g2" || merged.Groups[2].ID != "g3" {
+		t.Errorf("unexpected IDs: %s, %s, %s",
+			merged.Groups[0].ID, merged.Groups[1].ID, merged.Groups[2].ID)
+	}
+}
+
+func TestDeduplicateGroups(t *testing.T) {
+	cr := ClusteringResponse{
+		Groups: []ClusterGroup{
+			{ID: "g1", HunkIDs: []string{"a", "b", "a"}},
+			{ID: "g2", HunkIDs: []string{"c", "b"}},
+		},
+	}
+
+	deduped := deduplicateGroups(cr)
+
+	if len(deduped.Groups[0].HunkIDs) != 2 {
+		t.Errorf("g1: expected 2 after dedup, got %d", len(deduped.Groups[0].HunkIDs))
+	}
+	// "b" was already seen in g1, so g2 should only have "c"
+	if len(deduped.Groups[1].HunkIDs) != 1 {
+		t.Errorf("g2: expected 1 after dedup, got %d", len(deduped.Groups[1].HunkIDs))
+	}
+	if deduped.Groups[1].HunkIDs[0] != "c" {
+		t.Errorf("g2: expected 'c', got %s", deduped.Groups[1].HunkIDs[0])
+	}
+}
+
+func TestBuildClusteringInput_UsesCompactIDs(t *testing.T) {
+	hunks := testHunks()
+	sortHunks(hunks)
+
+	input, idMap := buildClusteringInput(hunks, 50)
+
+	if !contains(input, "h1") || !contains(input, "h2") || !contains(input, "h3") {
+		t.Error("expected compact IDs h1, h2, h3 in input")
+	}
+	// Real hunk IDs should NOT appear in the prompt
+	if contains(input, "aaa") || contains(input, "bbb") || contains(input, "ccc") {
+		t.Error("real hunk IDs should not appear in clustering input")
+	}
+
+	if idMap.toReal["h1"] != "aaa" {
+		t.Errorf("mapping h1 -> %s, expected aaa", idMap.toReal["h1"])
+	}
+}
+
+func TestBuildFileUnitClusteringInput(t *testing.T) {
+	hunks := testHunks()
+	units := preGroupByFile(hunks)
+
+	input := buildFileUnitClusteringInput(units, hunks, 50)
+
+	if !contains(input, "f1") || !contains(input, "f2") {
+		t.Error("expected file unit IDs f1, f2 in input")
+	}
+	if !contains(input, "auth.go") || !contains(input, "ui.go") {
+		t.Error("expected file paths in input")
 	}
 }
