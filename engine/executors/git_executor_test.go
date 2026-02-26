@@ -78,6 +78,17 @@ func gitLog(t *testing.T, dir string) []string {
 	return lines
 }
 
+func gitHead(t *testing.T, dir string) string {
+	t.Helper()
+	cmd := exec.Command("git", "rev-parse", "HEAD")
+	cmd.Dir = dir
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("git rev-parse HEAD: %v", err)
+	}
+	return strings.TrimSpace(string(out))
+}
+
 func testHash(h models.Hunk) string {
 	data := h.FilePath + h.Header + h.Patch
 	sum := sha256.Sum256([]byte(data))
@@ -96,11 +107,11 @@ func main() {
 }
 `)
 
-	cmd := exec.Command("git", "diff")
+	cmd := exec.Command("git", "diff", "HEAD")
 	cmd.Dir = dir
 	diffOut, err := cmd.Output()
 	if err != nil {
-		t.Fatalf("git diff: %v", err)
+		t.Fatalf("git diff HEAD: %v", err)
 	}
 
 	hunks := parseDiffForTest(string(diffOut))
@@ -114,14 +125,14 @@ func main() {
 	}
 
 	plan := &models.CommitPlan{
-		ToolVersion: "0.1.0",
+		ToolVersion: "0.2.0",
 		BaseRef:     "HEAD",
 		Commits: []models.CommitUnit{
 			{ID: "c1", Type: "refactor", Subject: "use fmt for printing", Hunks: hunkIDs},
 		},
 	}
 
-	executor := NewGitExecutorWithHunks(dir, hunks)
+	executor := NewGitExecutorWithHunks(dir, hunks, false)
 	if err := executor.Execute(context.Background(), plan, false); err != nil {
 		t.Fatalf("execute failed: %v", err)
 	}
@@ -144,7 +155,7 @@ func TestGitExecutor_DryRun(t *testing.T) {
 		},
 	}
 
-	executor := NewGitExecutorWithHunks(dir, nil)
+	executor := NewGitExecutorWithHunks(dir, nil, false)
 	if err := executor.Execute(context.Background(), plan, true); err != nil {
 		t.Fatalf("dry run failed: %v", err)
 	}
@@ -168,7 +179,7 @@ func TestGitExecutor_FailRestoresIndex(t *testing.T) {
 		},
 	}
 
-	executor := NewGitExecutorWithHunks(dir, hunks)
+	executor := NewGitExecutorWithHunks(dir, hunks, false)
 	err := executor.Execute(context.Background(), plan, false)
 	if err == nil {
 		t.Fatal("expected error for bad patch")
@@ -180,6 +191,177 @@ func TestGitExecutor_FailRestoresIndex(t *testing.T) {
 	logs := gitLog(t, dir)
 	if len(logs) != 1 {
 		t.Errorf("expected only initial commit after abort, got %d", len(logs))
+	}
+}
+
+func TestGitExecutor_PartialApplyRollsBack(t *testing.T) {
+	dir := setupTestRepo(t)
+
+	writeFile(t, dir, "hello.go", `package main
+
+import "fmt"
+
+func main() {
+	fmt.Println("hello")
+}
+`)
+
+	cmd := exec.Command("git", "diff", "HEAD")
+	cmd.Dir = dir
+	diffOut, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("git diff HEAD: %v", err)
+	}
+
+	hunks := parseDiffForTest(string(diffOut))
+	if len(hunks) == 0 {
+		t.Fatal("expected hunks from diff")
+	}
+
+	hunkIDs := make([]string, len(hunks))
+	for i, h := range hunks {
+		hunkIDs[i] = h.HunkID
+	}
+
+	originalHead := gitHead(t, dir)
+
+	plan := &models.CommitPlan{
+		Commits: []models.CommitUnit{
+			{ID: "c1", Type: "refactor", Subject: "use fmt for printing", Hunks: hunkIDs},
+			{ID: "c2", Type: "fix", Subject: "this should fail", Hunks: []string{"nonexistent"}},
+		},
+	}
+
+	executor := NewGitExecutorWithHunks(dir, hunks, false)
+	err = executor.Execute(context.Background(), plan, false)
+	if err == nil {
+		t.Fatal("expected error for c2")
+	}
+	if !strings.Contains(err.Error(), "rolled back") {
+		t.Errorf("error should mention rolled back: %v", err)
+	}
+
+	currentHead := gitHead(t, dir)
+	if currentHead != originalHead {
+		t.Errorf("HEAD should be restored to %s, got %s", originalHead, currentHead)
+	}
+
+	logs := gitLog(t, dir)
+	if len(logs) != 1 {
+		t.Errorf("expected only initial commit after rollback, got %d: %v", len(logs), logs)
+	}
+}
+
+func TestGitExecutor_DeletedFile(t *testing.T) {
+	dir := setupTestRepo(t)
+
+	os.Remove(filepath.Join(dir, "hello.go"))
+
+	cmd := exec.Command("git", "diff", "HEAD")
+	cmd.Dir = dir
+	diffOut, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("git diff HEAD: %v", err)
+	}
+
+	hunks := parseDiffForTest(string(diffOut))
+	if len(hunks) == 0 {
+		t.Fatal("expected hunks from diff for deleted file")
+	}
+
+	for i := range hunks {
+		hunks[i].DeletedFile = true
+	}
+
+	hunkIDs := make([]string, len(hunks))
+	for i, h := range hunks {
+		hunkIDs[i] = h.HunkID
+	}
+
+	plan := &models.CommitPlan{
+		Commits: []models.CommitUnit{
+			{ID: "c1", Type: "chore", Subject: "remove hello.go", Hunks: hunkIDs},
+		},
+	}
+
+	executor := NewGitExecutorWithHunks(dir, hunks, false)
+	if err := executor.Execute(context.Background(), plan, false); err != nil {
+		t.Fatalf("execute failed for deletion: %v", err)
+	}
+
+	logs := gitLog(t, dir)
+	if len(logs) < 2 {
+		t.Fatalf("expected at least 2 commits, got %d", len(logs))
+	}
+	if logs[0] != "chore: remove hello.go" {
+		t.Errorf("unexpected commit message: %s", logs[0])
+	}
+}
+
+func TestGitExecutor_StagedChangesIncluded(t *testing.T) {
+	dir := setupTestRepo(t)
+
+	run := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		cmd.Env = append(os.Environ(),
+			"GIT_AUTHOR_NAME=test",
+			"GIT_AUTHOR_EMAIL=test@test.com",
+			"GIT_COMMITTER_NAME=test",
+			"GIT_COMMITTER_EMAIL=test@test.com",
+		)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %s failed: %v\n%s", strings.Join(args, " "), err, out)
+		}
+	}
+
+	writeFile(t, dir, "hello.go", `package main
+
+import "fmt"
+
+func main() {
+	fmt.Println("hello")
+}
+`)
+	run("add", "hello.go")
+
+	// git diff HEAD captures staged changes; git diff alone would not
+	cmd := exec.Command("git", "diff", "HEAD")
+	cmd.Dir = dir
+	diffOut, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("git diff HEAD: %v", err)
+	}
+	if len(diffOut) == 0 {
+		t.Fatal("git diff HEAD should show staged changes")
+	}
+
+	hunks := parseDiffForTest(string(diffOut))
+	if len(hunks) == 0 {
+		t.Fatal("expected hunks from staged diff")
+	}
+
+	hunkIDs := make([]string, len(hunks))
+	for i, h := range hunks {
+		hunkIDs[i] = h.HunkID
+	}
+
+	plan := &models.CommitPlan{
+		Commits: []models.CommitUnit{
+			{ID: "c1", Type: "refactor", Subject: "use fmt for printing", Hunks: hunkIDs},
+		},
+	}
+
+	executor := NewGitExecutorWithHunks(dir, hunks, false)
+	if err := executor.Execute(context.Background(), plan, false); err != nil {
+		t.Fatalf("execute with staged changes failed: %v", err)
+	}
+
+	logs := gitLog(t, dir)
+	if len(logs) < 2 {
+		t.Fatalf("expected at least 2 commits, got %d", len(logs))
 	}
 }
 
