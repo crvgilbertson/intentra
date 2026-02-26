@@ -191,8 +191,8 @@ func validateMessagingResponse(mr MessagingResponse, clustering ClusteringRespon
 		}
 		seen[c.GroupID] = true
 
-		if maxSubjectLen > 0 && len(c.Subject) > maxSubjectLen {
-			return fmt.Errorf("group %q subject exceeds %d chars (%d): %q",
+		if maxSubjectLen > 0 && len(c.Subject) > maxSubjectLen+10 {
+			return fmt.Errorf("group %q subject far exceeds %d chars (%d): %q",
 				c.GroupID, maxSubjectLen, len(c.Subject), c.Subject)
 		}
 	}
@@ -225,11 +225,17 @@ func assemblePlan(ec enginectx.EngineContext, clustering ClusteringResponse, mes
 			footers = append(footers, models.Footer{Token: f.Token, Value: f.Value})
 		}
 
+		subject := msg.Subject
+		maxLen := ec.Config.Style.MaxSubjectLen
+		if maxLen > 0 && len(subject) > maxLen {
+			subject = strings.TrimSpace(subject[:maxLen-3]) + "..."
+		}
+
 		commits = append(commits, models.CommitUnit{
 			ID:       fmt.Sprintf("c%d", i+1),
 			Type:     msg.Type,
 			Scope:    msg.Scope,
-			Subject:  msg.Subject,
+			Subject:  subject,
 			Body:     msg.Body,
 			Breaking: msg.Breaking,
 			Footers:  footers,
