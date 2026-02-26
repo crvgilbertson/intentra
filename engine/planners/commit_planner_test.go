@@ -250,7 +250,7 @@ func TestValidateMessagingResponse_MissingGroup(t *testing.T) {
 			{GroupID: "g1", CommitMessage: CommitMessage{Type: "feat", Subject: "x"}},
 		},
 	}
-	err := validateMessagingResponse(mr, clustering)
+	err := validateMessagingResponse(mr, clustering, 72)
 	if err == nil {
 		t.Fatal("expected error for missing group g2")
 	}

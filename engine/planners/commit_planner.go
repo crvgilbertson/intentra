@@ -88,10 +88,11 @@ func (p *CommitPlanner) clusterHunks(ctx context.Context, ec enginectx.EngineCon
 
 func (p *CommitPlanner) generateMessages(ctx context.Context, ec enginectx.EngineContext, clustering ClusteringResponse) (MessagingResponse, error) {
 	input := buildMessagingInput(ec, clustering)
-	sysPrompt := fmt.Sprintf(messagingSystemPrompt, ec.Config.Style.MaxSubjectLen)
+	maxSubjectLen := ec.Config.Style.MaxSubjectLen
+	sysPrompt := fmt.Sprintf(messagingSystemPrompt, maxSubjectLen)
 
 	validateMessaging := func(mr MessagingResponse) error {
-		return validateMessagingResponse(mr, clustering)
+		return validateMessagingResponse(mr, clustering, maxSubjectLen)
 	}
 
 	return reasoning.CallWithRetry[MessagingResponse](
@@ -173,7 +174,7 @@ func validateClusteringResponse(cr ClusteringResponse, hunks []models.Hunk) erro
 	return nil
 }
 
-func validateMessagingResponse(mr MessagingResponse, clustering ClusteringResponse) error {
+func validateMessagingResponse(mr MessagingResponse, clustering ClusteringResponse, maxSubjectLen int) error {
 	expectedGroups := make(map[string]bool)
 	for _, g := range clustering.Groups {
 		expectedGroups[g.ID] = true
@@ -188,6 +189,11 @@ func validateMessagingResponse(mr MessagingResponse, clustering ClusteringRespon
 			return fmt.Errorf("duplicate group_id %q in messaging", c.GroupID)
 		}
 		seen[c.GroupID] = true
+
+		if maxSubjectLen > 0 && len(c.Subject) > maxSubjectLen {
+			return fmt.Errorf("group %q subject exceeds %d chars (%d): %q",
+				c.GroupID, maxSubjectLen, len(c.Subject), c.Subject)
+		}
 	}
 
 	for gid := range expectedGroups {
