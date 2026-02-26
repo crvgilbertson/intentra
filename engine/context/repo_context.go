@@ -24,14 +24,16 @@ type EngineContext struct {
 // It shells out to git for diff and log; this is the only place in the
 // context package that has side effects.
 func BuildContext(ctx context.Context, cfg config.EngineConfig) (EngineContext, error) {
+	root, _ := repoRoot(ctx)
+
 	// Use "diff HEAD" to capture both staged and unstaged changes.
-	// Falls back to empty string for repos with no commits yet.
-	trackedDiff, err := gitCommand(ctx, "diff", "HEAD")
+	// Run from repo root so paths are consistent regardless of CWD.
+	trackedDiff, err := gitCommandInDir(ctx, root, "diff", "HEAD")
 	if err != nil {
 		trackedDiff = ""
 	}
 
-	untrackedDiff, err := collectUntrackedDiff(ctx)
+	untrackedDiff, err := collectUntrackedDiff(ctx, root)
 	if err != nil {
 		return EngineContext{}, fmt.Errorf("collecting untracked files: %w", err)
 	}
@@ -76,8 +78,10 @@ func BuildContext(ctx context.Context, cfg config.EngineConfig) (EngineContext, 
 
 // collectUntrackedDiff finds untracked files (respecting .gitignore) and
 // generates unified diff output for each, treating them as new file additions.
-func collectUntrackedDiff(ctx context.Context) (string, error) {
-	out, err := gitCommand(ctx, "ls-files", "--others", "--exclude-standard")
+// root is the repo top-level directory; all paths are resolved relative to it
+// so the function works correctly regardless of the caller's CWD.
+func collectUntrackedDiff(ctx context.Context, root string) (string, error) {
+	out, err := gitCommandInDir(ctx, root, "ls-files", "--others", "--exclude-standard")
 	if err != nil {
 		return "", nil
 	}
@@ -91,16 +95,25 @@ func collectUntrackedDiff(ctx context.Context) (string, error) {
 
 		filePath := filepath.ToSlash(file)
 
-		if isBinaryFile(filePath) {
+		absPath := file
+		if root != "" {
+			absPath = filepath.Join(root, file)
+		}
+
+		if isBinaryFile(absPath) {
 			continue
 		}
 
-		content, err := os.ReadFile(file)
+		content, err := os.ReadFile(absPath)
 		if err != nil {
+			continue
+		}
+		if len(content) == 0 {
 			continue
 		}
 
 		text := strings.ReplaceAll(string(content), "\r\n", "\n")
+		hasTrailingNewline := strings.HasSuffix(text, "\n")
 		text = strings.TrimRight(text, "\n")
 		lines := strings.Split(text, "\n")
 		fmt.Fprintf(&sb, "diff --git a/%s b/%s\n", filePath, filePath)
@@ -110,6 +123,9 @@ func collectUntrackedDiff(ctx context.Context) (string, error) {
 		fmt.Fprintf(&sb, "@@ -0,0 +1,%d @@\n", len(lines))
 		for _, line := range lines {
 			fmt.Fprintf(&sb, "+%s\n", line)
+		}
+		if !hasTrailingNewline {
+			sb.WriteString("\\ No newline at end of file\n")
 		}
 	}
 
@@ -179,12 +195,29 @@ func shouldIgnore(filePath string, patterns []string) bool {
 	return false
 }
 
-func gitCommand(ctx context.Context, args ...string) (string, error) {
+// repoRoot returns the absolute path of the repository's top-level directory.
+func repoRoot(ctx context.Context) (string, error) {
+	cmd := exec.CommandContext(ctx, "git", "rev-parse", "--show-toplevel")
+	out, err := cmd.Output()
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(strings.ReplaceAll(string(out), "\r\n", "\n")), nil
+}
+
+func gitCommandInDir(ctx context.Context, dir string, args ...string) (string, error) {
 	cmd := exec.CommandContext(ctx, "git", args...)
+	if dir != "" {
+		cmd.Dir = dir
+	}
 	out, err := cmd.Output()
 	if err != nil {
 		return "", fmt.Errorf("git %s: %w", strings.Join(args, " "), err)
 	}
 	result := strings.ReplaceAll(string(out), "\r\n", "\n")
 	return result, nil
+}
+
+func gitCommand(ctx context.Context, args ...string) (string, error) {
+	return gitCommandInDir(ctx, "", args...)
 }
