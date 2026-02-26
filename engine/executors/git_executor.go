@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"intentra/engine/models"
+	"github.com/crvgilbertson/intentra/engine/models"
 )
 
 // GitExecutor applies a CommitPlan by staging hunks and committing.

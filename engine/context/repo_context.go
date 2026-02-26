@@ -8,8 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"intentra/config"
-	"intentra/engine/models"
+	"github.com/crvgilbertson/intentra/config"
+	"github.com/crvgilbertson/intentra/engine/models"
 )
 
 // EngineContext holds all repository state needed by planners.

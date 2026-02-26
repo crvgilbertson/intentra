@@ -3,7 +3,7 @@ package executors
 import (
 	"context"
 
-	"intentra/engine/models"
+	"github.com/crvgilbertson/intentra/engine/models"
 )
 
 // Executor applies a validated Plan to the repository.

@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"intentra/engine/models"
+	"github.com/crvgilbertson/intentra/engine/models"
 )
 
 func setupTestRepo(t *testing.T) string {

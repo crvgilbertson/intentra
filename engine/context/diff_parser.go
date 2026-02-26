@@ -3,7 +3,7 @@ package context
 import (
 	"strings"
 
-	"intentra/engine/models"
+	"github.com/crvgilbertson/intentra/engine/models"
 )
 
 // ParseDiff splits unified diff output into individual Hunks.

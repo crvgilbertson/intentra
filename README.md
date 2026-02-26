@@ -61,13 +61,13 @@ A deterministic, AI-powered code change reasoning engine. Intentra analyzes your
 ## Installation
 
 ```bash
-go install intentra@latest
+go install github.com/crvgilbertson/intentra@latest
 ```
 
 Or build from source:
 
 ```bash
-git clone <repo-url> && cd intentra
+git clone https://github.com/crvgilbertson/intentra.git && cd intentra
 go build -o intentra .
 ```
 
@@ -681,15 +681,16 @@ These boundaries are enforced by design and must not be violated:
 
 Intentra is designed as an extensible platform. The `Planner` interface is generic -- commit planning is the first implementation. Future capabilities will follow the same pattern: context -> reasoning -> plan -> validate -> execute.
 
-| Phase | Capability | Status |
-|-------|-----------|--------|
-| **1** | Commit planning (atomic, Conventional Commits) | **v0.1 -- Done** |
-| 2 | Commit intelligence (risk score, entanglement detection, confidence metrics) | Planned |
-| 3 | PR intelligence (summarization, split suggestions, review assistance) | Planned |
-| 4 | Workflow intelligence platform (change impact graph, test selection, semantic release, policy enforcement) | Planned |
+| Version | Capability | Status |
+|---------|-----------|--------|
+| **v0.1.0** | Commit planning (atomic, Conventional Commits), plan caching, dependency ordering, multi-provider LLM support, colored output | **Released** |
+| v0.2.0 | `intentra pr` -- automatic branch creation + GitHub PR submission | Planned |
+| v0.3.0 | Commit intelligence (risk score, entanglement detection, confidence metrics) | Planned |
+| v0.4.0 | PR intelligence (summarization, split suggestions, review assistance) | Planned |
+| v1.0.0 | Workflow intelligence platform (change impact graph, test selection, semantic release, policy enforcement) | Planned |
 
 ---
 
 ## License
 
-TBD
+Apache License 2.0 — see [LICENSE](LICENSE) for details.

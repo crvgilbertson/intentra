@@ -3,7 +3,7 @@ package context
 import (
 	"testing"
 
-	"intentra/engine/models"
+	"github.com/crvgilbertson/intentra/engine/models"
 )
 
 func TestHashHunk_Stability(t *testing.T) {

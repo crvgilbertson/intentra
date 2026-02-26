@@ -6,9 +6,9 @@ import (
 	"fmt"
 	"testing"
 
-	enginectx "intentra/engine/context"
-	"intentra/engine/models"
-	"intentra/config"
+	enginectx "github.com/crvgilbertson/intentra/engine/context"
+	"github.com/crvgilbertson/intentra/engine/models"
+	"github.com/crvgilbertson/intentra/config"
 )
 
 // mockEngine is a test double for reasoning.ReasoningEngine.

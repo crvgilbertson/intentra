@@ -3,7 +3,7 @@ package main
 import (
 	"os"
 
-	"intentra/cmd"
+	"github.com/crvgilbertson/intentra/cmd"
 )
 
 func main() {

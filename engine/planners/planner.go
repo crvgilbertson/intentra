@@ -3,8 +3,8 @@ package planners
 import (
 	"context"
 
-	enginectx "intentra/engine/context"
-	"intentra/engine/models"
+	enginectx "github.com/crvgilbertson/intentra/engine/context"
+	"github.com/crvgilbertson/intentra/engine/models"
 )
 
 // Planner produces a Plan from repository context.
