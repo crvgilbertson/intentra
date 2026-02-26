@@ -21,13 +21,14 @@ var (
 )
 
 type AIConfig struct {
-	Provider    string  `yaml:"provider"`
-	Model       string  `yaml:"model"`
-	Temperature float64 `yaml:"temperature"`
-	MaxDiffKB   int     `yaml:"max_diff_kb"`
-	BaseURL     string  `yaml:"base_url,omitempty"`
-	MaxRetries  int     `yaml:"max_retries"`
-	Timeout     int     `yaml:"timeout"`
+	Provider     string  `yaml:"provider"`
+	Model        string  `yaml:"model"`
+	Temperature  float64 `yaml:"temperature"`
+	MaxDiffKB    int     `yaml:"max_diff_kb"`
+	BaseURL      string  `yaml:"base_url,omitempty"`
+	MaxRetries   int     `yaml:"max_retries"`
+	Timeout      int     `yaml:"timeout"`
+	MaxHunkLines int     `yaml:"max_hunk_lines"`
 }
 
 type EngineSettings struct {
@@ -59,12 +60,13 @@ func DefaultConfig() EngineConfig {
 			BodyRequired:  false,
 		},
 		AI: AIConfig{
-			Provider:    "openai",
-			Model:       "gpt-4.1",
-			Temperature: 0.2,
-			MaxDiffKB:   500,
-			MaxRetries:  1,
-			Timeout:     120,
+			Provider:     "openai",
+			Model:        "gpt-4.1",
+			Temperature:  0.2,
+			MaxDiffKB:    500,
+			MaxRetries:   1,
+			Timeout:      120,
+			MaxHunkLines: 50,
 		},
 		Engine: EngineSettings{
 			StrictMode:        true,
