@@ -36,6 +36,7 @@ type EngineSettings struct {
 	MaxCommits        int      `yaml:"max_commits"`
 	IgnorePatterns    []string `yaml:"ignore_patterns"`
 	SignCommits       bool     `yaml:"sign_commits"`
+	AutoPush          bool     `yaml:"auto_push"`
 }
 
 type EngineConfig struct {
@@ -68,6 +69,7 @@ func DefaultConfig() EngineConfig {
 			MaxCommits:        20,
 			IgnorePatterns:    []string{},
 			SignCommits:       false,
+			AutoPush:          false,
 		},
 	}
 }
