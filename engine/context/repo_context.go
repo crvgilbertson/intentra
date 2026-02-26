@@ -83,7 +83,9 @@ func collectUntrackedDiff(ctx context.Context) (string, error) {
 			continue
 		}
 
-		if isBinaryFile(file) {
+		filePath := filepath.ToSlash(file)
+
+		if isBinaryFile(filePath) {
 			continue
 		}
 
@@ -92,11 +94,13 @@ func collectUntrackedDiff(ctx context.Context) (string, error) {
 			continue
 		}
 
-		lines := strings.Split(string(content), "\n")
-		fmt.Fprintf(&sb, "diff --git a/%s b/%s\n", file, file)
+		text := strings.ReplaceAll(string(content), "\r\n", "\n")
+		text = strings.TrimRight(text, "\n")
+		lines := strings.Split(text, "\n")
+		fmt.Fprintf(&sb, "diff --git a/%s b/%s\n", filePath, filePath)
 		fmt.Fprintf(&sb, "new file mode 100644\n")
 		fmt.Fprintf(&sb, "--- /dev/null\n")
-		fmt.Fprintf(&sb, "+++ b/%s\n", file)
+		fmt.Fprintf(&sb, "+++ b/%s\n", filePath)
 		fmt.Fprintf(&sb, "@@ -0,0 +1,%d @@\n", len(lines))
 		for _, line := range lines {
 			fmt.Fprintf(&sb, "+%s\n", line)
@@ -117,7 +121,32 @@ func isBinaryFile(path string) bool {
 		".7z": true, ".rar": true, ".xz": true,
 		".pdf": true, ".wasm": true, ".pyc": true,
 	}
-	return binaryExts[ext]
+	if binaryExts[ext] {
+		return true
+	}
+	return hasBinaryContent(path)
+}
+
+// hasBinaryContent reads the first 512 bytes and checks for null bytes,
+// which is the same heuristic git uses to detect binary files.
+func hasBinaryContent(path string) bool {
+	f, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+
+	buf := make([]byte, 512)
+	n, err := f.Read(buf)
+	if err != nil || n == 0 {
+		return false
+	}
+	for _, b := range buf[:n] {
+		if b == 0 {
+			return true
+		}
+	}
+	return false
 }
 
 func gitCommand(ctx context.Context, args ...string) (string, error) {
@@ -126,5 +155,6 @@ func gitCommand(ctx context.Context, args ...string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("git %s: %w", strings.Join(args, " "), err)
 	}
-	return string(out), nil
+	result := strings.ReplaceAll(string(out), "\r\n", "\n")
+	return result, nil
 }

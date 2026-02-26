@@ -204,15 +204,33 @@ func buildPatch(commit models.CommitUnit, hunkMap map[string]models.Hunk) string
 
 	var sb strings.Builder
 	for filePath, hunks := range fileHunks {
-		absA := filepath.ToSlash("a/" + filePath)
-		absB := filepath.ToSlash("b/" + filePath)
+		pathSlash := filepath.ToSlash(filePath)
+		absA := "a/" + pathSlash
+		absB := "b/" + pathSlash
+
+		isNew := false
+		for _, h := range hunks {
+			if h.NewFile {
+				isNew = true
+				break
+			}
+		}
+
 		fmt.Fprintf(&sb, "diff --git %s %s\n", absA, absB)
-		fmt.Fprintf(&sb, "--- %s\n", absA)
+		if isNew {
+			fmt.Fprintf(&sb, "new file mode 100644\n")
+			fmt.Fprintf(&sb, "--- /dev/null\n")
+		} else {
+			fmt.Fprintf(&sb, "--- %s\n", absA)
+		}
 		fmt.Fprintf(&sb, "+++ %s\n", absB)
 		for _, h := range hunks {
-			fmt.Fprintf(&sb, "%s\n", h.Header)
+			header := strings.TrimRight(h.Header, "\r")
+			fmt.Fprintf(&sb, "%s\n", header)
 			if h.Patch != "" {
-				fmt.Fprintf(&sb, "%s\n", h.Patch)
+				patch := strings.ReplaceAll(h.Patch, "\r\n", "\n")
+				patch = strings.ReplaceAll(patch, "\r", "")
+				fmt.Fprintf(&sb, "%s\n", patch)
 			}
 		}
 	}
