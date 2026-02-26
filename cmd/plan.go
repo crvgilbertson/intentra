@@ -54,6 +54,7 @@ func runPlan(cmd *cobra.Command, args []string) error {
 	planner := planners.NewCommitPlanner(engine)
 
 	spin := ui.NewSpinner("Generating commit plan...")
+	planner.OnProgress = func(stage string) { spin.UpdateMessage(stage) }
 	spin.Start()
 	plan, err := planner.BuildPlan(ctx, ec)
 	spin.Stop()
