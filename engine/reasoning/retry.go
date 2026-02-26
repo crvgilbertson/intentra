@@ -4,13 +4,15 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+
+	"github.com/crvgilbertson/intentra/engine"
 )
 
 // CallWithRetry calls the engine, unmarshals into T, and validates.
 // On failure it retries up to maxRetries times with a correction prompt.
 func CallWithRetry[T any](
 	ctx context.Context,
-	engine ReasoningEngine,
+	eng ReasoningEngine,
 	schemaName string,
 	schema interface{},
 	systemPrompt string,
@@ -30,9 +32,10 @@ func CallWithRetry[T any](
 			input += fmt.Sprintf("\n\n[CORRECTION]: Your previous response failed: %v. Please fix the issues and respond again.", lastErr)
 		}
 
-		raw, err := engine.CallStructured(ctx, schemaName, schema, systemPrompt, input)
+		raw, err := eng.CallStructured(ctx, schemaName, schema, systemPrompt, input)
 		if err != nil {
-			return zero, fmt.Errorf("reasoning call (attempt %d/%d): %w", attempt+1, maxRetries+1, err)
+			return zero, engine.NewReasoningError(
+				fmt.Sprintf("call failed (attempt %d/%d)", attempt+1, maxRetries+1), err)
 		}
 
 		var result T
@@ -49,5 +52,6 @@ func CallWithRetry[T any](
 		return result, nil
 	}
 
-	return zero, fmt.Errorf("all %d attempt(s) failed, last error: %w", maxRetries+1, lastErr)
+	return zero, engine.NewReasoningError(
+		fmt.Sprintf("all %d attempt(s) failed", maxRetries+1), lastErr)
 }

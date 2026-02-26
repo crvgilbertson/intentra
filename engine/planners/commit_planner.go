@@ -27,6 +27,7 @@ Rules:
 - Split unrelated concerns into separate groups.
 - Keep inseparable changes together.
 - Do not over-split: if changes are tightly coupled, keep them in one group.
+- Hunks from the same file should stay in one group unless they serve clearly unrelated purposes (e.g., a bug fix and a new feature). Documentation or config changes in a single file should always be one group.
 - Use stable group IDs: g1, g2, g3, etc.
 - Every hunk_id provided must be assigned to exactly one group. Do not omit any.
 - Order groups by dependency: foundational changes (models, types, interfaces) first, then logic that depends on them, then CLI/entrypoint last. A later group may depend on an earlier group, but never the reverse.
@@ -48,7 +49,7 @@ Rules:
 - subject must be imperative mood, lowercase first letter, no trailing period.
 - subject length must be <= %d characters.
 - scope is optional; if used, it must be from the allowed scopes or left null.
-- body is optional; use it only for non-obvious changes.
+- body is optional; use it only when the subject alone is not enough to understand the change. When used, keep it to 1-2 concise sentences that explain WHY the change was made, not WHAT changed. Never enumerate individual changes line-by-line.
 - breaking must be true only for breaking changes, and must include a BREAKING CHANGE footer.
 - Generate one commit per group_id provided.`
 
@@ -305,6 +306,7 @@ func (p *CommitPlanner) clusterHunks(ctx context.Context, ec enginectx.EngineCon
 	}
 
 	cr = deduplicateGroups(cr)
+	cr = consolidateSingleFileGroups(cr, ec.Hunks)
 
 	missing := findMissingHunks(cr, ec.Hunks)
 	if len(missing) > 0 {
@@ -800,6 +802,71 @@ func validateClusteringHardErrors(cr ClusteringResponse, hunks []models.Hunk) er
 	return nil
 }
 
+// consolidateSingleFileGroups merges groups that exclusively contain hunks
+// from the same file. If g1 only touches README.md and g3 only touches
+// README.md, they become one group. Groups touching multiple files are left
+// alone.
+func consolidateSingleFileGroups(cr ClusteringResponse, hunks []models.Hunk) ClusteringResponse {
+	hunkByID := make(map[string]models.Hunk, len(hunks))
+	for _, h := range hunks {
+		hunkByID[h.HunkID] = h
+	}
+
+	type groupInfo struct {
+		file     string
+		isSingle bool
+	}
+
+	infos := make([]groupInfo, len(cr.Groups))
+	for i, g := range cr.Groups {
+		files := make(map[string]bool)
+		for _, hid := range g.HunkIDs {
+			if h, ok := hunkByID[hid]; ok {
+				files[h.FilePath] = true
+			}
+		}
+		if len(files) == 1 {
+			for f := range files {
+				infos[i] = groupInfo{file: f, isSingle: true}
+			}
+		}
+	}
+
+	fileToGroups := make(map[string][]int)
+	for i, info := range infos {
+		if info.isSingle {
+			fileToGroups[info.file] = append(fileToGroups[info.file], i)
+		}
+	}
+
+	merged := make(map[int]bool)
+	for _, indices := range fileToGroups {
+		if len(indices) <= 1 {
+			continue
+		}
+		target := indices[0]
+		for _, src := range indices[1:] {
+			cr.Groups[target].HunkIDs = append(cr.Groups[target].HunkIDs, cr.Groups[src].HunkIDs...)
+			merged[src] = true
+		}
+	}
+
+	if len(merged) == 0 {
+		return cr
+	}
+
+	var result []ClusterGroup
+	for i, g := range cr.Groups {
+		if !merged[i] {
+			result = append(result, g)
+		}
+	}
+	for i := range result {
+		result[i].ID = fmt.Sprintf("g%d", i+1)
+	}
+	return ClusteringResponse{Groups: result}
+}
+
 func deduplicateGroups(cr ClusteringResponse) ClusteringResponse {
 	seen := make(map[string]bool)
 	for i, g := range cr.Groups {
@@ -979,6 +1046,7 @@ func assemblePlan(ec enginectx.EngineContext, clustering ClusteringResponse, mes
 	}
 
 	return models.CommitPlan{
+		SchemaVersion:   models.CurrentSchemaVersion,
 		ToolVersion:     internal.Version,
 		BaseRef:         ec.BaseRef,
 		DiffFingerprint: models.DiffFingerprintFromHunks(ec.Hunks),

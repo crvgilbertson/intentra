@@ -14,6 +14,7 @@ import (
 var (
 	cfgPath string
 	cfg     config.EngineConfig
+	verbose bool
 )
 
 var rootCmd = &cobra.Command{
@@ -41,6 +42,7 @@ var rootCmd = &cobra.Command{
 		if err != nil {
 			return fmt.Errorf("loading config: %w", err)
 		}
+		ui.VerboseMode = verbose
 		return nil
 	},
 	SilenceUsage: true,
@@ -48,6 +50,7 @@ var rootCmd = &cobra.Command{
 
 func init() {
 	rootCmd.PersistentFlags().StringVar(&cfgPath, "config", config.DefaultPath, "path to config file")
+	rootCmd.PersistentFlags().BoolVar(&verbose, "verbose", false, "enable verbose debug output")
 }
 
 func Execute() error {

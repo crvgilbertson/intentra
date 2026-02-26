@@ -120,6 +120,9 @@ func TestCommitPlanner_BuildPlan_Success(t *testing.T) {
 		t.Errorf("expected 1 hunk in c2, got %d", len(cp.Commits[1].Hunks))
 	}
 
+	if cp.SchemaVersion != models.CurrentSchemaVersion {
+		t.Errorf("expected schema version %s, got %s", models.CurrentSchemaVersion, cp.SchemaVersion)
+	}
 	if cp.ToolVersion != "0.3.0" {
 		t.Errorf("expected tool version 0.3.0, got %s", cp.ToolVersion)
 	}
@@ -587,6 +590,79 @@ func TestDeduplicateGroups(t *testing.T) {
 	}
 	if deduped.Groups[1].HunkIDs[0] != "c" {
 		t.Errorf("g2: expected 'c', got %s", deduped.Groups[1].HunkIDs[0])
+	}
+}
+
+func TestConsolidateSingleFileGroups_AllSameFile(t *testing.T) {
+	hunks := []models.Hunk{
+		{HunkID: "a1", FilePath: "README.md"},
+		{HunkID: "a2", FilePath: "README.md"},
+		{HunkID: "a3", FilePath: "README.md"},
+		{HunkID: "a4", FilePath: "README.md"},
+	}
+
+	cr := ClusteringResponse{
+		Groups: []ClusterGroup{
+			{ID: "g1", HunkIDs: []string{"a1", "a2"}},
+			{ID: "g2", HunkIDs: []string{"a3"}},
+			{ID: "g3", HunkIDs: []string{"a4"}},
+		},
+	}
+
+	result := consolidateSingleFileGroups(cr, hunks)
+
+	if len(result.Groups) != 1 {
+		t.Fatalf("expected 1 group after consolidation, got %d", len(result.Groups))
+	}
+	if len(result.Groups[0].HunkIDs) != 4 {
+		t.Errorf("expected 4 hunks in merged group, got %d", len(result.Groups[0].HunkIDs))
+	}
+	if result.Groups[0].ID != "g1" {
+		t.Errorf("expected renumbered ID g1, got %s", result.Groups[0].ID)
+	}
+}
+
+func TestConsolidateSingleFileGroups_MixedFiles(t *testing.T) {
+	hunks := []models.Hunk{
+		{HunkID: "a1", FilePath: "README.md"},
+		{HunkID: "a2", FilePath: "README.md"},
+		{HunkID: "b1", FilePath: "main.go"},
+		{HunkID: "c1", FilePath: "config.go"},
+		{HunkID: "c2", FilePath: "config.go"},
+	}
+
+	cr := ClusteringResponse{
+		Groups: []ClusterGroup{
+			{ID: "g1", HunkIDs: []string{"a1"}},
+			{ID: "g2", HunkIDs: []string{"b1", "c1"}},
+			{ID: "g3", HunkIDs: []string{"a2"}},
+			{ID: "g4", HunkIDs: []string{"c2"}},
+		},
+	}
+
+	result := consolidateSingleFileGroups(cr, hunks)
+
+	// g1 and g3 both only touch README.md → merged.
+	// g2 touches main.go + config.go → left alone.
+	// g4 only touches config.go → left alone (only one single-file group for config.go).
+	if len(result.Groups) != 3 {
+		t.Fatalf("expected 3 groups after consolidation, got %d", len(result.Groups))
+	}
+}
+
+func TestConsolidateSingleFileGroups_NoMergeNeeded(t *testing.T) {
+	hunks := testHunks()
+	cr := ClusteringResponse{
+		Groups: []ClusterGroup{
+			{ID: "g1", HunkIDs: []string{"aaa", "bbb"}},
+			{ID: "g2", HunkIDs: []string{"ccc"}},
+		},
+	}
+
+	result := consolidateSingleFileGroups(cr, hunks)
+
+	if len(result.Groups) != 2 {
+		t.Fatalf("expected 2 groups (no merge needed), got %d", len(result.Groups))
 	}
 }
 

@@ -5,6 +5,7 @@ import (
 	"strings"
 	"unicode"
 
+	"github.com/crvgilbertson/intentra/engine"
 	enginectx "github.com/crvgilbertson/intentra/engine/context"
 	"github.com/crvgilbertson/intentra/engine/models"
 )
@@ -35,7 +36,7 @@ func ValidateCommitPlan(plan models.CommitPlan, ec enginectx.EngineContext) erro
 	validateBreaking(plan, ve)
 
 	if len(ve.Errors) > 0 {
-		return ve
+		return engine.NewValidationError("commit plan", ve)
 	}
 	return nil
 }

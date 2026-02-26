@@ -1,6 +1,7 @@
 package context
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -183,6 +184,33 @@ func TestParseDiff_Empty(t *testing.T) {
 	hunks := ParseDiff("")
 	if len(hunks) != 0 {
 		t.Fatalf("expected 0 hunks for empty diff, got %d", len(hunks))
+	}
+}
+
+func TestParseDiff_CRLFLineEndings(t *testing.T) {
+	crlf := strings.ReplaceAll(singleFileDiff, "\n", "\r\n")
+	hunks := ParseDiff(crlf)
+	if len(hunks) != 2 {
+		t.Fatalf("expected 2 hunks from CRLF diff, got %d", len(hunks))
+	}
+	for _, h := range hunks {
+		if h.FilePath != "main.go" {
+			t.Errorf("expected file path main.go, got %s", h.FilePath)
+		}
+		if strings.Contains(h.Header, "\r") {
+			t.Errorf("header should not contain \\r: %q", h.Header)
+		}
+	}
+}
+
+func TestParseDiff_MixedLineEndings(t *testing.T) {
+	mixed := "diff --git a/f.go b/f.go\r\nindex aaa..bbb 100644\n--- a/f.go\r\n+++ b/f.go\n@@ -1,2 +1,3 @@\r\n pkg\r\n+new\n end\n"
+	hunks := ParseDiff(mixed)
+	if len(hunks) != 1 {
+		t.Fatalf("expected 1 hunk from mixed-ending diff, got %d", len(hunks))
+	}
+	if hunks[0].FilePath != "f.go" {
+		t.Errorf("expected f.go, got %s", hunks[0].FilePath)
 	}
 }
 

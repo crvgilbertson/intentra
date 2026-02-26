@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/crvgilbertson/intentra/engine"
 	"github.com/crvgilbertson/intentra/engine/models"
 )
 
@@ -40,7 +41,7 @@ func (e *GitExecutor) snapshotState(ctx context.Context) (*indexSnapshot, error)
 
 	tree, err := e.gitOutput(ctx, "write-tree")
 	if err != nil {
-		return nil, fmt.Errorf("write-tree: %w", err)
+		return nil, engine.NewGitError("write-tree", err)
 	}
 
 	return &indexSnapshot{
@@ -133,11 +134,11 @@ func (e *GitExecutor) applyCommit(ctx context.Context, commit models.CommitUnit,
 	tmpFile.Close()
 
 	if err := e.git(ctx, "apply", "--check", "--cached", tmpFile.Name()); err != nil {
-		return fmt.Errorf("patch for commit %s will not apply cleanly: %w", commit.ID, err)
+		return engine.NewGitError(fmt.Sprintf("patch for commit %s will not apply cleanly", commit.ID), err)
 	}
 
 	if err := e.git(ctx, "apply", "--cached", tmpFile.Name()); err != nil {
-		return fmt.Errorf("git apply --cached: %w", err)
+		return engine.NewGitError("apply --cached", err)
 	}
 
 	args := []string{"commit"}
@@ -160,9 +161,9 @@ func (e *GitExecutor) applyCommit(ctx context.Context, commit models.CommitUnit,
 
 	if err := e.git(ctx, args...); err != nil {
 		if isHookError(err) {
-			return fmt.Errorf("git commit rejected by pre-commit hook: %w\n  Hint: set skip_hooks: true in .intentra/config.yaml to bypass hooks", err)
+			return engine.NewGitError("commit rejected by pre-commit hook\n  Hint: set skip_hooks: true in .intentra/config.yaml to bypass hooks", err)
 		}
-		return fmt.Errorf("git commit: %w", err)
+		return engine.NewGitError("commit", err)
 	}
 
 	return nil

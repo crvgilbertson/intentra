@@ -108,12 +108,20 @@ func (s *Spinner) Stop() {
 	})
 }
 
+var VerboseMode bool
+
 func Header(format string, a ...interface{})  { headerTxt.Fprintf(stderr, format, a...) }
 func Success(format string, a ...interface{}) { successC.Fprintf(stdout, format, a...) }
 func Warn(format string, a ...interface{})    { warnC.Fprintf(stderr, format, a...) }
 func Error(format string, a ...interface{})   { errC.Fprintf(stderr, format, a...) }
 func Info(format string, a ...interface{})    { infoC.Fprintf(stderr, format, a...) }
 func Dim(format string, a ...interface{})     { dimC.Fprintf(stdout, format, a...) }
+
+func Verbose(format string, a ...interface{}) {
+	if VerboseMode {
+		dimC.Fprintf(stderr, "[verbose] "+format, a...)
+	}
+}
 
 func PrintPlanSummary(toolVersion, baseRef string, commits []CommitDisplay) {
 	fmt.Fprintln(stdout)
