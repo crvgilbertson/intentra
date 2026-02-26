@@ -76,12 +76,12 @@ go build -o intentra .
 ## Quick Start
 
 ```bash
-# 1. Initialize configuration
+# 1. Initialize configuration (creates .intentra/ directory)
 intentra init
 
 # 2. Make some code changes in your repo...
 
-# 3. Preview the commit plan (saved to .intentra-plan.json)
+# 3. Preview the commit plan (saved to .intentra/plan.json)
 intentra plan
 
 # 4. See the raw JSON plan
@@ -118,23 +118,24 @@ Run `intentra plan` to see how it would split these into atomic commits:
 $ intentra plan
 
 Found 7 hunk(s) across the diff.
-Generating commit plan...
+  ⠹ Generating commit plan... 12s
 
-━━━ Commit Plan (3 commit(s))
-    base: e4a91bc
-    engine: v0.1.0
+  ┌─────────────────────────────────────────────────────┐
+  │ Commit Plan  3 commit(s)
+  │ base: e4a91bc3d1f2  •  engine v0.2.0
+  └─────────────────────────────────────────────────────┘
 
-  1. feat(auth): add JWT token validation and refresh logic
-     3 hunk(s)  →  src/auth/jwt.go, src/auth/jwt_test.go
+  1 feat(auth): add JWT token validation and refresh logic
+    3 hunk(s)  →  src/auth/jwt.go, src/auth/jwt_test.go
 
-  2. fix(api): handle nil user in request middleware
-     2 hunk(s)  →  src/api/handler.go, src/api/middleware.go
+  2 fix(api): handle nil user in request middleware
+    2 hunk(s)  →  src/api/handler.go, src/api/middleware.go
 
-  3. refactor(core): simplify utility string helpers
-     2 hunk(s)  →  src/core/utils.go
+  3 refactor(core): simplify utility string helpers
+    2 hunk(s)  →  src/core/utils.go
 
-━━━
-Plan saved to .intentra-plan.json
+  ─────────────────────────────────────────────────────
+Plan saved to .intentra/plan.json
 ```
 
 Three clean, atomic commits -- each with a single concern, ordered by dependency. When you're happy with the plan:
@@ -142,7 +143,7 @@ Three clean, atomic commits -- each with a single concern, ordered by dependency
 ```
 $ intentra apply --yes
 
-Using cached plan from .intentra-plan.json (diff unchanged).
+Using cached plan from .intentra/plan.json (diff unchanged).
 Applying 3 commit(s)...
 ✓ Successfully applied 3 commit(s).
 ```
@@ -167,9 +168,9 @@ $ intentra plan --json
 
 ```json
 {
-  "tool_version": "0.1.0",
+  "tool_version": "0.2.0",
   "base_ref": "e4a91bc",
-  "diff_fingerprint": "3a7f2b1c9d4e8f0a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4",
+  "diff_fingerprint": "3a7f2b1c9d4e8f0a...",
   "style": {
     "convention": "conventional_commits",
     "max_subject_len": 72,
@@ -185,28 +186,10 @@ $ intentra plan --json
       "body": "Implement token validation middleware and automatic refresh\nfor expired tokens using the configured secret key.",
       "breaking": false,
       "hunks": ["a1b2c3...", "d4e5f6...", "71g8h9..."]
-    },
-    {
-      "id": "c2",
-      "type": "fix",
-      "scope": "api",
-      "subject": "handle nil user in request middleware",
-      "breaking": false,
-      "hunks": ["j0k1l2...", "m3n4o5..."]
-    },
-    {
-      "id": "c3",
-      "type": "refactor",
-      "scope": "core",
-      "subject": "simplify utility string helpers",
-      "breaking": false,
-      "hunks": ["p6q7r8...", "s9t0u1..."]
     }
   ]
 }
 ```
-
-The `diff_fingerprint` field is a SHA256 hash of all hunk IDs. It enables `apply` to detect whether the working tree has changed since the plan was generated.
 
 ### Safe dry-run by default
 
@@ -215,22 +198,8 @@ The `diff_fingerprint` field is a SHA256 hash of all hunk IDs. It enables `apply
 ```
 $ intentra apply
 
-Using cached plan from .intentra-plan.json (diff unchanged).
-
-━━━ Commit Plan (3 commit(s))
-    base: e4a91bc
-    engine: v0.1.0
-
-  1. feat(auth): add JWT token validation and refresh logic
-     3 hunk(s)  →  src/auth/jwt.go, src/auth/jwt_test.go
-
-  2. fix(api): handle nil user in request middleware
-     2 hunk(s)  →  src/api/handler.go, src/api/middleware.go
-
-  3. refactor(core): simplify utility string helpers
-     2 hunk(s)  →  src/core/utils.go
-
-━━━
+Using cached plan from .intentra/plan.json (diff unchanged).
+...
 Dry-run mode. Pass --yes to apply.
 ```
 
@@ -244,8 +213,7 @@ Run Intentra completely offline with Ollama:
 # Pull a model
 ollama pull qwen3-coder:32b
 
-# Configure Intentra
-cat .engine.yaml
+# Configure in .intentra/config.yaml:
 # ai:
 #     provider: ollama
 #     model: qwen3-coder:32b
@@ -260,7 +228,7 @@ intentra plan
 
 ### `intentra plan`
 
-Analyzes the current `git diff` and generates a structured commit plan using AI reasoning. The plan is saved to `.intentra-plan.json` so that a subsequent `apply` can reuse it without calling the LLM again.
+Analyzes the current `git diff HEAD` (staged + unstaged changes) and generates a structured commit plan using AI reasoning. The plan is saved to `.intentra/plan.json` so that a subsequent `apply` can reuse it without calling the LLM again.
 
 ```
 Usage:
@@ -268,51 +236,6 @@ Usage:
 
 Flags:
       --json   Output raw CommitPlan JSON instead of human-readable summary
-```
-
-**Default output** is a colored, readable summary:
-
-```
-Found 5 hunk(s) across the diff.
-Generating commit plan...
-
-━━━ Commit Plan (2 commit(s))
-    base: a1b2c3d
-    engine: v0.1.0
-
-  1. feat(auth): add JWT token validation
-     3 hunk(s)  →  src/auth/jwt.go, src/auth/jwt_test.go
-
-  2. fix(api): handle nil pointer in user lookup
-     2 hunk(s)  →  src/api/handler.go, src/api/middleware.go
-
-━━━
-Plan saved to .intentra-plan.json
-```
-
-**With `--json`**, outputs the full `CommitPlan` JSON -- useful for piping to other tools or inspection:
-
-```json
-{
-  "tool_version": "0.1.0",
-  "base_ref": "a1b2c3d",
-  "diff_fingerprint": "3a7f2b...",
-  "style": {
-    "convention": "conventional_commits",
-    "max_subject_len": 72,
-    "allowed_types": ["feat", "fix", "refactor", "perf", "docs", "test", "chore"],
-    "scopes": ["auth", "api"]
-  },
-  "commits": [
-    {
-      "id": "c1",
-      "type": "feat",
-      "scope": "auth",
-      "subject": "add JWT token validation",
-      "hunks": ["<sha256>", "<sha256>", "<sha256>"]
-    }
-  ]
-}
 ```
 
 ### `intentra apply`
