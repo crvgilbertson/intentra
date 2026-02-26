@@ -681,13 +681,60 @@ These boundaries are enforced by design and must not be violated:
 
 Intentra is designed as an extensible platform. The `Planner` interface is generic -- commit planning is the first implementation. Future capabilities will follow the same pattern: context -> reasoning -> plan -> validate -> execute.
 
-| Version | Capability | Status |
-|---------|-----------|--------|
-| **v0.1.0** | Commit planning (atomic, Conventional Commits), plan caching, dependency ordering, multi-provider LLM support, colored output | **Released** |
-| v0.2.0 | `intentra pr` -- automatic branch creation + GitHub PR submission | Planned |
-| v0.3.0 | Commit intelligence (risk score, entanglement detection, confidence metrics) | Planned |
-| v0.4.0 | PR intelligence (summarization, split suggestions, review assistance) | Planned |
-| v1.0.0 | Workflow intelligence platform (change impact graph, test selection, semantic release, policy enforcement) | Planned |
+The individual features (v0.1--v0.4) drive developer adoption. The team features (v0.5--v0.6) drive enterprise value. v1.0.0 is the stability promise.
+
+### v0.1.0 -- Commit Planning (Released)
+
+- Atomic commit planning from uncommitted diffs using AI reasoning
+- Two-pass pipeline: intent clustering + message generation
+- Plan caching with diff fingerprint for instant reuse
+- Dependency-aware commit ordering (foundational packages first)
+- Multi-provider LLM support: OpenAI, Anthropic, Gemini, Ollama
+- Colored terminal output with type-coded commit summaries
+- Protected branch detection, dry-run by default, index restore on failure
+
+### v0.2.0 -- GitHub Integration
+
+- `intentra pr` -- create a feature branch, push, and open a GitHub PR with AI-generated title and description
+- `intentra push` -- push the current branch with smart remote detection
+- Remote branch protection awareness via GitHub API
+- `gh` CLI integration for authentication and API access
+
+### v0.3.0 -- Commit Intelligence
+
+- Risk scoring per commit (sensitive areas: auth, database, payments, config)
+- Entanglement detection (warning when a commit touches unrelated subsystems)
+- Confidence score for clustering quality (how sure is the model about the grouping?)
+- `intentra plan --analyze` flag for detailed per-commit breakdown
+
+### v0.4.0 -- PR Intelligence
+
+- Auto-generate PR descriptions from the structured commit plan
+- Suggest PR splits when a branch has too many unrelated changes
+- Review checklist generation based on what files and subsystems changed
+- `intentra review` command for self-review before submitting
+
+### v0.5.0 -- CI/CD Integration
+
+- Official GitHub Actions action (`uses: crvgilbertson/intentra-action`)
+- Run `intentra plan --json` in CI to validate commit hygiene on every PR
+- Block merges if commits don't follow conventions or fail risk thresholds
+- Post plan summary as a PR comment for reviewer context
+
+### v0.6.0 -- Team Configuration
+
+- Shareable config presets for common setups (monorepo, library, microservice)
+- Scope auto-detection from directory structure and module boundaries
+- Team-wide `.intentra.yaml` in repo root with personal overrides
+- `intentra config check` for config validation and drift detection
+
+### v1.0.0 -- Stable Platform
+
+- Stability promise: CLI flags, config format, and JSON output schema will not break
+- Plugin interface for custom planners and validators
+- Streaming output and parallel hunk analysis for large diffs
+- `intentra upgrade` for self-updating to latest release
+- Comprehensive documentation site
 
 ---
 
