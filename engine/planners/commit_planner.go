@@ -50,11 +50,18 @@ Rules:
 
 // CommitPlanner implements Planner for the commit planning use case.
 type CommitPlanner struct {
-	engine reasoning.ReasoningEngine
+	engine     reasoning.ReasoningEngine
+	OnProgress func(stage string)
 }
 
 func NewCommitPlanner(engine reasoning.ReasoningEngine) *CommitPlanner {
 	return &CommitPlanner{engine: engine}
+}
+
+func (p *CommitPlanner) progress(stage string) {
+	if p.OnProgress != nil {
+		p.OnProgress(stage)
+	}
 }
 
 func (p *CommitPlanner) Name() string {
@@ -74,11 +81,13 @@ func (p *CommitPlanner) BuildPlan(ctx context.Context, ec enginectx.EngineContex
 
 	sortHunks(ec.Hunks)
 
+	p.progress(fmt.Sprintf("Clustering %d hunks...", len(ec.Hunks)))
 	clustering, err := p.clusterHunks(ctx, ec)
 	if err != nil {
 		return nil, fmt.Errorf("clustering: %w", err)
 	}
 
+	p.progress(fmt.Sprintf("Generating commit messages for %d groups...", len(clustering.Groups)))
 	messaging, err := p.generateMessages(ctx, ec, clustering)
 	if err != nil {
 		return nil, fmt.Errorf("messaging: %w", err)
@@ -90,7 +99,7 @@ func (p *CommitPlanner) BuildPlan(ctx context.Context, ec enginectx.EngineContex
 }
 
 func (p *CommitPlanner) clusterHunks(ctx context.Context, ec enginectx.EngineContext) (ClusteringResponse, error) {
-	input := buildClusteringInput(ec.Hunks)
+	input := buildClusteringInput(ec.Hunks, ec.Config.AI.MaxHunkLines)
 
 	maxCommits := ec.Config.Engine.MaxCommits
 	if maxCommits <= 0 {
@@ -251,12 +260,13 @@ func (p *CommitPlanner) generateMessages(ctx context.Context, ec enginectx.Engin
 	)
 }
 
-func buildClusteringInput(hunks []models.Hunk) string {
+func buildClusteringInput(hunks []models.Hunk, maxHunkLines int) string {
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "Hunks to cluster (%d total — you must assign all %d):\n\n", len(hunks), len(hunks))
 	for _, h := range hunks {
+		patch := summarizePatch(h.Patch, maxHunkLines)
 		fmt.Fprintf(&sb, "- hunk_id: %s\n  file: %s\n  header: %s\n  patch:\n%s\n\n",
-			h.HunkID, h.FilePath, h.Header, h.Patch)
+			h.HunkID, h.FilePath, h.Header, patch)
 	}
 
 	fmt.Fprintf(&sb, "\n--- CHECKLIST: all %d hunk IDs (every one must appear in exactly one group) ---\n", len(hunks))
@@ -265,6 +275,34 @@ func buildClusteringInput(hunks []models.Hunk) string {
 	}
 
 	return sb.String()
+}
+
+// summarizePatch truncates a patch to the first and last keepLines lines
+// if it exceeds maxLines. This reduces token usage while preserving
+// enough context for the LLM to cluster correctly.
+// maxLines <= 0 disables truncation.
+func summarizePatch(patch string, maxLines int) string {
+	if maxLines <= 0 {
+		return patch
+	}
+	lines := strings.Split(patch, "\n")
+	if len(lines) <= maxLines {
+		return patch
+	}
+	keepLines := maxLines / 5
+	if keepLines < 5 {
+		keepLines = 5
+	}
+	if keepLines*2 >= len(lines) {
+		return patch
+	}
+
+	head := lines[:keepLines]
+	tail := lines[len(lines)-keepLines:]
+	omitted := len(lines) - keepLines*2
+	return strings.Join(head, "\n") +
+		fmt.Sprintf("\n... (%d lines omitted) ...\n", omitted) +
+		strings.Join(tail, "\n")
 }
 
 func buildMessagingInput(ec enginectx.EngineContext, clustering ClusteringResponse) string {

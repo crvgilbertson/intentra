@@ -49,14 +49,28 @@ func typeColor(t string) *color.Color {
 }
 
 // Spinner shows an animated elapsed-time indicator during long operations.
+// Use UpdateMessage to change the displayed text mid-operation.
 type Spinner struct {
-	msg  string
-	stop chan struct{}
-	done chan struct{}
+	msg    string
+	stop   chan struct{}
+	done   chan struct{}
+	msgCh  chan string
 }
 
 func NewSpinner(msg string) *Spinner {
-	return &Spinner{msg: msg, stop: make(chan struct{}), done: make(chan struct{})}
+	return &Spinner{
+		msg:   msg,
+		stop:  make(chan struct{}),
+		done:  make(chan struct{}),
+		msgCh: make(chan string, 4),
+	}
+}
+
+func (s *Spinner) UpdateMessage(msg string) {
+	select {
+	case s.msgCh <- msg:
+	default:
+	}
 }
 
 func (s *Spinner) Start() {
@@ -64,17 +78,21 @@ func (s *Spinner) Start() {
 		defer close(s.done)
 		frames := []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
 		start := time.Now()
+		msg := s.msg
 		i := 0
 		ticker := time.NewTicker(100 * time.Millisecond)
 		defer ticker.Stop()
 		for {
 			select {
 			case <-s.stop:
-				fmt.Fprintf(stderr, "\r%s\r", strings.Repeat(" ", 70))
+				fmt.Fprintf(stderr, "\r%s\r", strings.Repeat(" ", 80))
 				return
+			case newMsg := <-s.msgCh:
+				msg = newMsg
 			case <-ticker.C:
 				elapsed := time.Since(start).Truncate(time.Second)
-				infoC.Fprintf(stderr, "\r  %s %s %s", frames[i%len(frames)], s.msg, elapsed)
+				line := fmt.Sprintf("  %s %s %s", frames[i%len(frames)], msg, elapsed)
+				infoC.Fprintf(stderr, "\r%-80s", line)
 				i++
 			}
 		}
