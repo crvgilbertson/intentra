@@ -36,9 +36,13 @@ A deterministic, AI-powered code change reasoning engine. Intentra analyzes your
 
 3. **Messaging** -- For each cluster, the LLM generates Conventional Commit metadata: type, scope, subject, body, breaking change flags, and footers. All output is schema-validated.
 
-4. **Validation** -- The resulting `CommitPlan` is validated against business rules: every hunk is assigned exactly once, commit types and scopes are from the allowed set, subject length is within limits, breaking changes have proper footers, and more.
+4. **Ordering** -- Commits are reordered by dependency: foundational changes (models, types, interfaces) are applied before higher-level consumers (planners, validators, CLI). This ensures the repository compiles at every commit boundary.
 
-5. **Execution** -- Only when you explicitly pass `--yes` does Intentra touch git. It stages each commit's hunks via `git apply --cached` and commits them. If anything fails, the index is restored to its pre-apply state. No partial applies. No data corruption.
+5. **Validation** -- The resulting `CommitPlan` is validated against business rules: every hunk is assigned exactly once, commit types and scopes are from the allowed set, subject length is within limits, breaking changes have proper footers, and more.
+
+6. **Caching** -- The validated plan is saved to `.intentra-plan.json` with a diff fingerprint (SHA256 of all hunk IDs). If you run `apply` without changing your working tree, the cached plan is reused instantly -- no second LLM call. If the diff changes, the stale plan is detected and a fresh one is generated.
+
+7. **Execution** -- Only when you explicitly pass `--yes` does Intentra touch git. It stages each commit's hunks via `git apply --cached` and commits them. If anything fails, the index is restored to its pre-apply state. No partial applies. No data corruption.
 
 ---
 
@@ -77,13 +81,13 @@ intentra init
 
 # 2. Make some code changes in your repo...
 
-# 3. Preview the commit plan
+# 3. Preview the commit plan (saved to .intentra-plan.json)
 intentra plan
 
 # 4. See the raw JSON plan
 intentra plan --json
 
-# 5. Apply the plan (dry-run by default)
+# 5. Apply the cached plan (dry-run by default -- no LLM call if diff unchanged)
 intentra apply
 
 # 6. Actually apply the commits
@@ -116,25 +120,34 @@ $ intentra plan
 Found 7 hunk(s) across the diff.
 Generating commit plan...
 
-Commit Plan (3 commit(s)):
-Base: e4a91bc
+━━━ Commit Plan (3 commit(s))
+    base: e4a91bc
+    engine: v0.1.0
 
   1. feat(auth): add JWT token validation and refresh logic
-     hunks: 3
+     3 hunk(s)  →  src/auth/jwt.go, src/auth/jwt_test.go
+
   2. fix(api): handle nil user in request middleware
-     hunks: 2
+     2 hunk(s)  →  src/api/handler.go, src/api/middleware.go
+
   3. refactor(core): simplify utility string helpers
-     hunks: 2
+     2 hunk(s)  →  src/core/utils.go
+
+━━━
+Plan saved to .intentra-plan.json
 ```
 
-Three clean, atomic commits -- each with a single concern. When you're happy with the plan:
+Three clean, atomic commits -- each with a single concern, ordered by dependency. When you're happy with the plan:
 
 ```
 $ intentra apply --yes
 
+Using cached plan from .intentra-plan.json (diff unchanged).
 Applying 3 commit(s)...
-Successfully applied 3 commit(s).
+✓ Successfully applied 3 commit(s).
 ```
+
+No second LLM call -- the cached plan is reused since the diff hasn't changed.
 
 ```
 $ git log --oneline -3
@@ -156,6 +169,7 @@ $ intentra plan --json
 {
   "tool_version": "0.1.0",
   "base_ref": "e4a91bc",
+  "diff_fingerprint": "3a7f2b1c9d4e8f0a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4",
   "style": {
     "convention": "conventional_commits",
     "max_subject_len": 72,
@@ -192,6 +206,8 @@ $ intentra plan --json
 }
 ```
 
+The `diff_fingerprint` field is a SHA256 hash of all hunk IDs. It enables `apply` to detect whether the working tree has changed since the plan was generated.
+
 ### Safe dry-run by default
 
 `intentra apply` without `--yes` shows the plan but makes no changes:
@@ -199,20 +215,26 @@ $ intentra plan --json
 ```
 $ intentra apply
 
-Commit Plan (3 commit(s)):
-Base: e4a91bc
+Using cached plan from .intentra-plan.json (diff unchanged).
+
+━━━ Commit Plan (3 commit(s))
+    base: e4a91bc
+    engine: v0.1.0
 
   1. feat(auth): add JWT token validation and refresh logic
-     hunks: 3
-  2. fix(api): handle nil user in request middleware
-     hunks: 2
-  3. refactor(core): simplify utility string helpers
-     hunks: 2
+     3 hunk(s)  →  src/auth/jwt.go, src/auth/jwt_test.go
 
+  2. fix(api): handle nil user in request middleware
+     2 hunk(s)  →  src/api/handler.go, src/api/middleware.go
+
+  3. refactor(core): simplify utility string helpers
+     2 hunk(s)  →  src/core/utils.go
+
+━━━
 Dry-run mode. Pass --yes to apply.
 ```
 
-Your working tree is untouched. Review the plan, then run with `--yes` when ready.
+Your working tree is untouched. The cached plan is loaded instantly. Review the plan, then run with `--yes` when ready.
 
 ### Using with a local model
 
@@ -238,7 +260,7 @@ intentra plan
 
 ### `intentra plan`
 
-Analyzes the current `git diff` and generates a structured commit plan using AI reasoning.
+Analyzes the current `git diff` and generates a structured commit plan using AI reasoning. The plan is saved to `.intentra-plan.json` so that a subsequent `apply` can reuse it without calling the LLM again.
 
 ```
 Usage:
@@ -248,19 +270,24 @@ Flags:
       --json   Output raw CommitPlan JSON instead of human-readable summary
 ```
 
-**Default output** is a readable summary:
+**Default output** is a colored, readable summary:
 
 ```
 Found 5 hunk(s) across the diff.
 Generating commit plan...
 
-Commit Plan (2 commit(s)):
-Base: a1b2c3d
+━━━ Commit Plan (2 commit(s))
+    base: a1b2c3d
+    engine: v0.1.0
 
   1. feat(auth): add JWT token validation
-     hunks: 3
+     3 hunk(s)  →  src/auth/jwt.go, src/auth/jwt_test.go
+
   2. fix(api): handle nil pointer in user lookup
-     hunks: 2
+     2 hunk(s)  →  src/api/handler.go, src/api/middleware.go
+
+━━━
+Plan saved to .intentra-plan.json
 ```
 
 **With `--json`**, outputs the full `CommitPlan` JSON -- useful for piping to other tools or inspection:
@@ -269,6 +296,7 @@ Base: a1b2c3d
 {
   "tool_version": "0.1.0",
   "base_ref": "a1b2c3d",
+  "diff_fingerprint": "3a7f2b...",
   "style": {
     "convention": "conventional_commits",
     "max_subject_len": 72,
@@ -289,7 +317,7 @@ Base: a1b2c3d
 
 ### `intentra apply`
 
-Generates a commit plan and applies it to the repository. **Defaults to dry-run** -- you must pass `--yes` to actually create commits.
+Applies a commit plan to the repository. If a cached plan exists from a previous `plan` run and the diff hasn't changed, it is reused instantly (no LLM call). Otherwise, a new plan is generated. **Defaults to dry-run** -- you must pass `--yes` to actually create commits.
 
 ```
 Usage:
@@ -299,11 +327,21 @@ Flags:
       --yes    Actually apply commits (default is dry-run)
 ```
 
+**Plan caching behavior:**
+
+- If `.intentra-plan.json` exists and the diff fingerprint matches: `Using cached plan (diff unchanged).`
+- If the file exists but the diff has changed: `Cached plan is stale (diff changed). Re-planning...`
+- If no cached plan exists: `No cached plan found. Generating commit plan...`
+
+After a successful apply, the cache file is automatically deleted.
+
 **Without `--yes`**, the command shows the plan and exits:
 
 ```
-Commit Plan (2 commit(s)):
+Using cached plan from .intentra-plan.json (diff unchanged).
+━━━ Commit Plan (2 commit(s))
 ...
+━━━
 Dry-run mode. Pass --yes to apply.
 ```
 
@@ -312,7 +350,7 @@ Dry-run mode. Pass --yes to apply.
 1. Snapshots the current git index state
 2. For each commit: writes a patch file, stages with `git apply --cached`, then `git commit`
 3. If any step fails: immediately aborts and restores the index to the snapshot
-4. Reports success or which commit failed and why
+4. On success: deletes the cached plan and reports which commits were created
 
 ### `intentra init`
 
@@ -479,22 +517,29 @@ New models work immediately -- no Intentra update required. Just change the `mod
 ### Data Flow
 
 ```
-CLI Command
+CLI Command (plan / apply)
     |
     v
 Context Builder ---- git diff, git log ---> EngineContext { Hunks, RecentCommits, Config }
     |
     v
+Plan Cache Check ---- .intentra-plan.json + diff fingerprint
+    |                  match? --> reuse cached plan (skip LLM)
+    |                  stale/missing? --> continue to reasoning
+    v
 Reasoning Engine --- LLM structured output (OpenAI / Anthropic / Ollama) ---> JSON (schema-validated)
     |
     v
-Commit Planner ---- two-pass (cluster + message) ---> CommitPlan
+Commit Planner ---- two-pass (cluster + message) + dependency reorder ---> CommitPlan
     |
     v
 Validator ---- business rules ---> pass / error
     |
     v
-Executor ---- git apply --cached + git commit ---> commits created
+Plan Cache Save ---- .intentra-plan.json (for reuse by apply)
+    |
+    v
+Executor ---- git apply --cached + git commit ---> commits created (apply --yes only)
 ```
 
 ### Two-Pass Planning Pipeline
@@ -511,6 +556,10 @@ For each cluster, the LLM generates Conventional Commit metadata: type, scope, s
 
 Both passes use the generic `CallWithRetry[T]` mechanism: if the LLM output fails validation, it retries once with a correction prompt. If the retry also fails, the operation aborts cleanly.
 
+**Post-Processing -- Dependency Ordering**
+
+After the LLM produces the plan, commits are deterministically reordered by package dependency. Each commit's hunks are inspected to determine which layer of the codebase they touch (models → context → reasoning → planners → validators → executors → cmd). Commits touching foundational layers are applied first, ensuring the repository compiles at every commit boundary. This is a pure, deterministic step -- no LLM involved.
+
 ### Safety Model
 
 Intentra enforces a strict trust model:
@@ -519,6 +568,7 @@ Intentra enforces a strict trust model:
 - **Dry-run by default** -- `intentra apply` without `--yes` shows the plan and exits.
 - **Atomic apply** -- Each commit is staged via `git apply --cached` and committed individually. If any step fails, the entire operation aborts and the git index is restored to its pre-apply snapshot.
 - **No history rewriting** -- No rebase, no amend, no force-push. Intentra only creates new commits.
+- **Plan caching** -- `plan` saves the result to `.intentra-plan.json` with a diff fingerprint. `apply` reuses it if the diff is unchanged, avoiding redundant LLM calls and ensuring the same plan is applied that was reviewed. If the diff changes, the stale plan is automatically discarded.
 - **Strict layer separation** -- The reasoning layer (LLM) cannot execute git commands. The executor layer cannot call the LLM. This is enforced architecturally, not by convention.
 
 ### Project Structure
@@ -530,9 +580,11 @@ intentra/
 │
 ├── cmd/                             CLI layer (Cobra commands, no business logic)
 │   ├── root.go                      Root command, --config flag, config loading
-│   ├── plan.go                      intentra plan [--json]
-│   ├── apply.go                     intentra apply [--yes]
-│   └── init.go                      intentra init
+│   ├── plan.go                      intentra plan [--json], plan caching
+│   ├── apply.go                     intentra apply [--yes], cache-aware plan resolution
+│   ├── init.go                      intentra init
+│   └── ui/
+│       └── styles.go                Colored terminal output (fatih/color)
 │
 ├── config/                          Configuration loading and defaults
 │   └── config.go                    EngineConfig, YAML load/write
@@ -547,7 +599,7 @@ intentra/
     │
     ├── models/                      Shared domain types (no logic)
     │   ├── hunk.go                  Hunk { HunkID, FilePath, Header, Patch, Summary }
-    │   ├── commit_plan.go           CommitPlan, CommitUnit, CommitStyle, Plan interface
+    │   ├── commit_plan.go           CommitPlan, CommitUnit, DiffFingerprint, Plan interface
     │   └── change_intent.go         Reserved for future capabilities
     │
     ├── reasoning/                   LLM abstraction (NO git calls)
@@ -603,7 +655,7 @@ The test suite includes:
 | Package | Tests | Coverage |
 |---------|-------|----------|
 | `engine/context` | 9 | Diff parsing (single file, multi-file, binary skip, renames, empty), hunk hashing (stability, uniqueness, format) |
-| `engine/planners` | 7 | Full planner flow with mocked LLM, empty hunks, clustering validation (missing/duplicate/unknown hunks), messaging validation (missing groups) |
+| `engine/planners` | 9 | Full planner flow with mocked LLM, empty hunks, clustering validation (missing/duplicate/unknown hunks), messaging validation (missing groups), commit dependency reordering, package layer scoring |
 | `engine/validators` | 13 | Valid plan, missing hunk, duplicate hunk, unknown hunk, bad type, bad scope, subject too long, trailing period, uppercase subject, breaking without footer, breaking with footer, empty scopes, multiple errors |
 | `engine/executors` | 3 | Apply single commit in temp repo, dry-run (no mutation), fail-and-restore (index recovery after bad patch) |
 
