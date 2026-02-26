@@ -8,11 +8,15 @@ import (
 )
 
 func ghAvailable() bool {
-	return exec.Command("gh", "--version").Run() == nil
+	ctx, cancel := localCtx()
+	defer cancel()
+	return exec.CommandContext(ctx, "gh", "--version").Run() == nil
 }
 
 func ghAuthenticated() bool {
-	return exec.Command("gh", "auth", "status").Run() == nil
+	ctx, cancel := netCtx()
+	defer cancel()
+	return exec.CommandContext(ctx, "gh", "auth", "status").Run() == nil
 }
 
 type ghRepoView struct {
@@ -23,7 +27,9 @@ type ghRepoView struct {
 }
 
 func ghRepoInfo() (owner, repo string, err error) {
-	out, err := exec.Command("gh", "repo", "view", "--json", "owner,name").Output()
+	ctx, cancel := netCtx()
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "gh", "repo", "view", "--json", "owner,name").Output()
 	if err != nil {
 		return "", "", fmt.Errorf("gh repo view: %w", err)
 	}
@@ -55,7 +61,9 @@ func requireGH() error {
 }
 
 func ghBranchProtection(owner, repo, branch string) (requiresPR bool, err error) {
-	out, err := exec.Command("gh", "api",
+	ctx, cancel := netCtx()
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "gh", "api",
 		fmt.Sprintf("repos/%s/%s/branches/%s/protection", owner, repo, branch),
 		"--jq", ".required_pull_request_reviews",
 	).CombinedOutput()

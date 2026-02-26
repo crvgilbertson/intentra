@@ -4,7 +4,9 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 
 	"github.com/spf13/cobra"
 
@@ -33,7 +35,8 @@ func init() {
 }
 
 func runApply(cmd *cobra.Command, args []string) error {
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	dryRun := !yesFlag
 
 	if !dryRun {
@@ -71,10 +74,7 @@ func runApply(cmd *cobra.Command, args []string) error {
 	}
 
 	printPlanSummary(cp, ec.Hunks)
-
-	for _, w := range validators.WarnFileOverlap(*cp, ec.Hunks) {
-		ui.Warn("  ⚠ %s\n", w)
-	}
+	printConfidence(cp, ec.Hunks)
 
 	if dryRun {
 		ui.Warn("Dry-run mode. Pass --yes to apply.\n")
@@ -82,6 +82,15 @@ func runApply(cmd *cobra.Command, args []string) error {
 	}
 
 	ui.Info("Applying %d commit(s)...\n", len(cp.Commits))
+
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	go func() {
+		<-sigCh
+		ui.Warn("\nInterrupt received — rolling back...\n")
+		cancel()
+	}()
+	defer signal.Stop(sigCh)
 
 	cwd, err := os.Getwd()
 	if err != nil {
@@ -107,9 +116,11 @@ func runApply(cmd *cobra.Command, args []string) error {
 	}
 	branch, _ := currentBranch()
 
-	if cfg.Engine.AutoPush && branch != "" {
+	if branch == "" || branch == "HEAD" {
+		// Detached HEAD — pushing doesn't make sense.
+	} else if cfg.Engine.AutoPush {
 		smartPush(remote, branch)
-	} else if branch != "" && !hasUpstream(branch) {
+	} else if !hasUpstream(branch) {
 		ui.Dim("\nTo push this branch:\n")
 		ui.Dim("  git push --set-upstream %s %s\n", remote, branch)
 	}
@@ -140,6 +151,7 @@ func resolveCommitPlan(ctx context.Context, ec *enginectx.EngineContext) (*model
 	spin := ui.NewSpinner("Generating commit plan...")
 	planner.OnProgress = func(stage string) { spin.UpdateMessage(stage) }
 	spin.Start()
+	defer spin.Stop()
 	plan, err := planner.BuildPlan(ctx, *ec)
 	spin.Stop()
 	if err != nil {

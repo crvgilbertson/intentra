@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/fatih/color"
@@ -51,10 +52,11 @@ func typeColor(t string) *color.Color {
 // Spinner shows an animated elapsed-time indicator during long operations.
 // Use UpdateMessage to change the displayed text mid-operation.
 type Spinner struct {
-	msg    string
-	stop   chan struct{}
-	done   chan struct{}
-	msgCh  chan string
+	msg      string
+	stop     chan struct{}
+	done     chan struct{}
+	msgCh    chan string
+	stopOnce sync.Once
 }
 
 func NewSpinner(msg string) *Spinner {
@@ -100,8 +102,10 @@ func (s *Spinner) Start() {
 }
 
 func (s *Spinner) Stop() {
-	close(s.stop)
-	<-s.done
+	s.stopOnce.Do(func() {
+		close(s.stop)
+		<-s.done
+	})
 }
 
 func Header(format string, a ...interface{})  { headerTxt.Fprintf(stderr, format, a...) }
@@ -163,6 +167,24 @@ func PrintPlanSummary(toolVersion, baseRef string, commits []CommitDisplay) {
 
 	fmt.Fprintln(stdout)
 	headerBar.Fprintf(stdout, "  ─────────────────────────────────────────────────────\n")
+}
+
+// PrintConfidence renders the plan confidence assessment after the plan summary.
+func PrintConfidence(level string, score float64, warnings []string) {
+	fmt.Fprintln(stdout)
+	label := fmt.Sprintf("  Confidence: %s (%.0f%%)", level, score*100)
+	switch level {
+	case "high":
+		successC.Fprintf(stdout, "%s\n", label)
+	case "medium":
+		warnC.Fprintf(stdout, "%s\n", label)
+	default:
+		errC.Fprintf(stdout, "%s\n", label)
+	}
+	for _, w := range warnings {
+		warnC.Fprintf(stdout, "    ! ")
+		dimC.Fprintf(stdout, "%s\n", w)
+	}
 }
 
 type CommitDisplay struct {

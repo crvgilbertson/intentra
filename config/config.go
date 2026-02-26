@@ -41,6 +41,7 @@ type EngineSettings struct {
 	RemoteName        string   `yaml:"remote_name"`
 	CommitAuthor      string   `yaml:"commit_author,omitempty"`
 	SkipHooks         bool     `yaml:"skip_hooks"`
+	BatchThreshold    int      `yaml:"batch_threshold"`
 }
 
 type EngineConfig struct {
@@ -78,6 +79,7 @@ func DefaultConfig() EngineConfig {
 			RemoteName:        "origin",
 			CommitAuthor:      "",
 			SkipHooks:         false,
+			BatchThreshold:    40,
 		},
 	}
 }

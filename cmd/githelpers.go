@@ -1,17 +1,34 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/crvgilbertson/intentra/cmd/ui"
 )
 
+const (
+	localCmdTimeout = 30 * time.Second
+	netCmdTimeout   = 120 * time.Second
+)
+
+func localCtx() (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.Background(), localCmdTimeout)
+}
+
+func netCtx() (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.Background(), netCmdTimeout)
+}
+
 func currentBranch() (string, error) {
-	out, err := exec.Command("git", "rev-parse", "--abbrev-ref", "HEAD").Output()
+	ctx, cancel := localCtx()
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "git", "rev-parse", "--abbrev-ref", "HEAD").Output()
 	if err != nil {
 		return "", err
 	}
@@ -19,16 +36,21 @@ func currentBranch() (string, error) {
 }
 
 func hasUpstream(branch string) bool {
-	err := exec.Command("git", "rev-parse", "--abbrev-ref", branch+"@{upstream}").Run()
-	return err == nil
+	ctx, cancel := localCtx()
+	defer cancel()
+	return exec.CommandContext(ctx, "git", "rev-parse", "--abbrev-ref", branch+"@{upstream}").Run() == nil
 }
 
 func remoteExists(remote string) bool {
-	return exec.Command("git", "remote", "get-url", remote).Run() == nil
+	ctx, cancel := localCtx()
+	defer cancel()
+	return exec.CommandContext(ctx, "git", "remote", "get-url", remote).Run() == nil
 }
 
 func pushBranch(remote string) error {
-	out, err := exec.Command("git", "push", remote).CombinedOutput()
+	ctx, cancel := netCtx()
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "git", "push", remote).CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("%s", strings.TrimSpace(string(out)))
 	}
@@ -36,7 +58,9 @@ func pushBranch(remote string) error {
 }
 
 func pushBranchWithUpstream(remote, branch string) error {
-	out, err := exec.Command("git", "push", "--set-upstream", remote, branch).CombinedOutput()
+	ctx, cancel := netCtx()
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "git", "push", "--set-upstream", remote, branch).CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("%s", strings.TrimSpace(string(out)))
 	}
@@ -44,7 +68,9 @@ func pushBranchWithUpstream(remote, branch string) error {
 }
 
 func findGitDir() string {
-	out, err := exec.Command("git", "rev-parse", "--git-dir").Output()
+	ctx, cancel := localCtx()
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "git", "rev-parse", "--git-dir").Output()
 	if err != nil {
 		return ""
 	}
@@ -96,7 +122,9 @@ func preflightCheck() error {
 		}
 	}
 
-	out, err := exec.Command("git", "diff", "--name-only", "--diff-filter=U").Output()
+	ctx, cancel := localCtx()
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "git", "diff", "--name-only", "--diff-filter=U").Output()
 	if err == nil && len(strings.TrimSpace(string(out))) > 0 {
 		ui.Error("Repository has unmerged paths (merge conflicts).\n")
 		ui.Dim("  Resolve all conflicts, then run: git add <files> && git commit\n")
@@ -155,8 +183,28 @@ func warnIfBranchProtected(branch string) {
 	}
 }
 
+// branchUpToDate returns true if the local branch has no unpushed commits
+// relative to the given remote. It verifies the tracking upstream actually
+// points to the expected remote before comparing.
+func branchUpToDate(remote, branch string) bool {
+	if !hasUpstream(branch) {
+		return false
+	}
+	ctx, cancel := localCtx()
+	defer cancel()
+	upstreamRemote, err := exec.CommandContext(ctx, "git", "config", "--get", fmt.Sprintf("branch.%s.remote", branch)).Output()
+	if err != nil || strings.TrimSpace(string(upstreamRemote)) != remote {
+		return false
+	}
+	out, err := exec.CommandContext(ctx, "git", "rev-list", "--count", branch+"@{upstream}.."+branch).Output()
+	if err != nil {
+		return false
+	}
+	return strings.TrimSpace(string(out)) == "0"
+}
+
 // smartPush handles the push logic shared between apply and push commands.
-// It returns true if a push was attempted successfully.
+// It returns true if the branch is pushed (or was already up-to-date).
 func smartPush(remote, branch string) bool {
 	if !remoteExists(remote) {
 		ui.Warn("Remote %q not found. Skipping push.\n", remote)
@@ -167,6 +215,10 @@ func smartPush(remote, branch string) bool {
 	warnIfBranchProtected(branch)
 
 	if hasUpstream(branch) {
+		if branchUpToDate(remote, branch) {
+			ui.Dim("Branch %s is already up-to-date with remote.\n", branch)
+			return true
+		}
 		ui.Info("Pushing to %s...\n", remote)
 		if err := pushBranch(remote); err != nil {
 			ui.Warn("Push failed: %v\n", err)

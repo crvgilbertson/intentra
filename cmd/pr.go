@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 
@@ -59,25 +60,38 @@ func runPR(cmd *cobra.Command, args []string) error {
 		remote = "origin"
 	}
 
-	ui.Info("Pushing %s to %s...\n", branch, remote)
 	if !smartPush(remote, branch) {
 		return fmt.Errorf("push failed — cannot create PR without pushing")
 	}
 
-	title, body := buildPRContent()
+	title, body := buildPRContent(base)
 
 	if prTitle != "" {
 		title = prTitle
 	}
 
-	ghArgs := []string{"pr", "create", "--title", title, "--body", body, "--base", base}
+	bodyFile, err := os.CreateTemp("", "intentra-pr-body-*.md")
+	if err != nil {
+		return fmt.Errorf("creating temp body file: %w", err)
+	}
+	defer os.Remove(bodyFile.Name())
+
+	if _, err := bodyFile.WriteString(body); err != nil {
+		bodyFile.Close()
+		return fmt.Errorf("writing PR body: %w", err)
+	}
+	bodyFile.Close()
+
+	ghArgs := []string{"pr", "create", "--title", title, "--body-file", bodyFile.Name(), "--base", base}
 	if prDraft {
 		ghArgs = append(ghArgs, "--draft")
 	}
 
 	ui.Info("Creating PR: %s -> %s\n", branch, base)
 
-	out, err := exec.Command("gh", ghArgs...).CombinedOutput()
+	ghCtx, ghCancel := netCtx()
+	defer ghCancel()
+	out, err := exec.CommandContext(ghCtx, "gh", ghArgs...).CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("gh pr create failed: %s", strings.TrimSpace(string(out)))
 	}
@@ -87,12 +101,24 @@ func runPR(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func buildPRContent() (title, body string) {
+func buildPRContent(base string) (title, body string) {
 	cached, err := loadCachedPlan()
-	if err == nil && len(cached.Commits) > 0 {
+	if err == nil && len(cached.Commits) > 0 && planMatchesHead(cached) {
 		return buildPRFromPlan(cached)
 	}
-	return buildPRFromGitLog()
+	return buildPRFromGitLog(base)
+}
+
+// planMatchesHead returns true if the cached plan's base ref is an ancestor
+// of the current HEAD, meaning the plan's commits are still part of HEAD's
+// history and the plan is valid for PR content.
+func planMatchesHead(cp *models.CommitPlan) bool {
+	if cp.BaseRef == "" || cp.BaseRef == "WORKING_TREE" {
+		return false
+	}
+	ctx, cancel := localCtx()
+	defer cancel()
+	return exec.CommandContext(ctx, "git", "merge-base", "--is-ancestor", cp.BaseRef, "HEAD").Run() == nil
 }
 
 func buildPRFromPlan(cp *models.CommitPlan) (title, body string) {
@@ -142,13 +168,20 @@ func commitFileList(c models.CommitUnit) string {
 	return fmt.Sprintf("(%d hunk(s))", len(c.Hunks))
 }
 
-func buildPRFromGitLog() (title, body string) {
-	out, err := exec.Command("git", "log", "--oneline", "-20", "--no-decorate").Output()
+const maxPRLogCommits = 100
+
+func buildPRFromGitLog(base string) (title, body string) {
+	rangeSpec := base + "..HEAD"
+	ctx, cancel := localCtx()
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "git", "log", "--oneline", "--no-decorate", rangeSpec).Output()
 	if err != nil || len(strings.TrimSpace(string(out))) == 0 {
 		return "Pull request", "Created with intentra."
 	}
 
 	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+	totalCount := len(lines)
+
 	if len(lines) == 1 {
 		parts := strings.SplitN(lines[0], " ", 2)
 		if len(parts) == 2 {
@@ -157,13 +190,20 @@ func buildPRFromGitLog() (title, body string) {
 			title = lines[0]
 		}
 	} else {
-		title = fmt.Sprintf("%d commits", len(lines))
+		title = fmt.Sprintf("%d commits", totalCount)
+	}
+
+	if len(lines) > maxPRLogCommits {
+		lines = lines[:maxPRLogCommits]
 	}
 
 	var sb strings.Builder
 	sb.WriteString("## Commits\n\n")
 	for _, line := range lines {
 		sb.WriteString(fmt.Sprintf("- %s\n", line))
+	}
+	if totalCount > maxPRLogCommits {
+		sb.WriteString(fmt.Sprintf("\n*...and %d more commits*\n", totalCount-maxPRLogCommits))
 	}
 	body = sb.String()
 	return
