@@ -37,6 +37,9 @@ type EngineSettings struct {
 	IgnorePatterns    []string `yaml:"ignore_patterns"`
 	SignCommits       bool     `yaml:"sign_commits"`
 	AutoPush          bool     `yaml:"auto_push"`
+	RemoteName        string   `yaml:"remote_name"`
+	CommitAuthor      string   `yaml:"commit_author,omitempty"`
+	SkipHooks         bool     `yaml:"skip_hooks"`
 }
 
 type EngineConfig struct {
@@ -70,6 +73,9 @@ func DefaultConfig() EngineConfig {
 			IgnorePatterns:    []string{},
 			SignCommits:       false,
 			AutoPush:          false,
+			RemoteName:        "origin",
+			CommitAuthor:      "",
+			SkipHooks:         false,
 		},
 	}
 }

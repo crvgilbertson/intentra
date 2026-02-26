@@ -132,7 +132,7 @@ func main() {
 		},
 	}
 
-	executor := NewGitExecutorWithHunks(dir, hunks, false)
+	executor := NewGitExecutorWithHunks(dir, hunks, ExecutorOptions{})
 	if err := executor.Execute(context.Background(), plan, false); err != nil {
 		t.Fatalf("execute failed: %v", err)
 	}
@@ -155,7 +155,7 @@ func TestGitExecutor_DryRun(t *testing.T) {
 		},
 	}
 
-	executor := NewGitExecutorWithHunks(dir, nil, false)
+	executor := NewGitExecutorWithHunks(dir, nil, ExecutorOptions{})
 	if err := executor.Execute(context.Background(), plan, true); err != nil {
 		t.Fatalf("dry run failed: %v", err)
 	}
@@ -179,7 +179,7 @@ func TestGitExecutor_FailRestoresIndex(t *testing.T) {
 		},
 	}
 
-	executor := NewGitExecutorWithHunks(dir, hunks, false)
+	executor := NewGitExecutorWithHunks(dir, hunks, ExecutorOptions{})
 	err := executor.Execute(context.Background(), plan, false)
 	if err == nil {
 		t.Fatal("expected error for bad patch")
@@ -232,7 +232,7 @@ func main() {
 		},
 	}
 
-	executor := NewGitExecutorWithHunks(dir, hunks, false)
+	executor := NewGitExecutorWithHunks(dir, hunks, ExecutorOptions{})
 	err = executor.Execute(context.Background(), plan, false)
 	if err == nil {
 		t.Fatal("expected error for c2")
@@ -284,7 +284,7 @@ func TestGitExecutor_DeletedFile(t *testing.T) {
 		},
 	}
 
-	executor := NewGitExecutorWithHunks(dir, hunks, false)
+	executor := NewGitExecutorWithHunks(dir, hunks, ExecutorOptions{})
 	if err := executor.Execute(context.Background(), plan, false); err != nil {
 		t.Fatalf("execute failed for deletion: %v", err)
 	}
@@ -354,9 +354,145 @@ func main() {
 		},
 	}
 
-	executor := NewGitExecutorWithHunks(dir, hunks, false)
+	executor := NewGitExecutorWithHunks(dir, hunks, ExecutorOptions{})
 	if err := executor.Execute(context.Background(), plan, false); err != nil {
 		t.Fatalf("execute with staged changes failed: %v", err)
+	}
+
+	logs := gitLog(t, dir)
+	if len(logs) < 2 {
+		t.Fatalf("expected at least 2 commits, got %d", len(logs))
+	}
+}
+
+func TestGitExecutor_CommitAuthor(t *testing.T) {
+	dir := setupTestRepo(t)
+
+	writeFile(t, dir, "hello.go", `package main
+
+import "fmt"
+
+func main() {
+	fmt.Println("hello")
+}
+`)
+
+	cmd := exec.Command("git", "diff", "HEAD")
+	cmd.Dir = dir
+	diffOut, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("git diff HEAD: %v", err)
+	}
+
+	hunks := parseDiffForTest(string(diffOut))
+	if len(hunks) == 0 {
+		t.Fatal("expected hunks from diff")
+	}
+
+	hunkIDs := make([]string, len(hunks))
+	for i, h := range hunks {
+		hunkIDs[i] = h.HunkID
+	}
+
+	plan := &models.CommitPlan{
+		Commits: []models.CommitUnit{
+			{ID: "c1", Type: "refactor", Subject: "use fmt for printing", Hunks: hunkIDs},
+		},
+	}
+
+	executor := NewGitExecutorWithHunks(dir, hunks, ExecutorOptions{
+		CommitAuthor: "Custom Author <custom@example.com>",
+	})
+	if err := executor.Execute(context.Background(), plan, false); err != nil {
+		t.Fatalf("execute failed: %v", err)
+	}
+
+	authorCmd := exec.Command("git", "log", "-1", "--format=%an <%ae>")
+	authorCmd.Dir = dir
+	authorOut, err := authorCmd.Output()
+	if err != nil {
+		t.Fatalf("git log author: %v", err)
+	}
+	got := strings.TrimSpace(string(authorOut))
+	if got != "Custom Author <custom@example.com>" {
+		t.Errorf("expected author 'Custom Author <custom@example.com>', got %q", got)
+	}
+}
+
+func TestGitExecutor_SkipHooks(t *testing.T) {
+	dir := setupTestRepo(t)
+
+	run := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		cmd.Env = append(os.Environ(),
+			"GIT_AUTHOR_NAME=test",
+			"GIT_AUTHOR_EMAIL=test@test.com",
+			"GIT_COMMITTER_NAME=test",
+			"GIT_COMMITTER_EMAIL=test@test.com",
+		)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %s failed: %v\n%s", strings.Join(args, " "), err, out)
+		}
+	}
+
+	hooksDir := filepath.Join(dir, ".git", "hooks")
+	os.MkdirAll(hooksDir, 0755)
+	hookScript := "#!/bin/sh\necho 'pre-commit hook rejected' >&2\nexit 1\n"
+	hookPath := filepath.Join(hooksDir, "pre-commit")
+	if err := os.WriteFile(hookPath, []byte(hookScript), 0755); err != nil {
+		t.Fatalf("writing hook: %v", err)
+	}
+	_ = run
+
+	writeFile(t, dir, "hello.go", `package main
+
+import "fmt"
+
+func main() {
+	fmt.Println("hello")
+}
+`)
+
+	cmd := exec.Command("git", "diff", "HEAD")
+	cmd.Dir = dir
+	diffOut, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("git diff HEAD: %v", err)
+	}
+
+	hunks := parseDiffForTest(string(diffOut))
+	if len(hunks) == 0 {
+		t.Fatal("expected hunks from diff")
+	}
+
+	hunkIDs := make([]string, len(hunks))
+	for i, h := range hunks {
+		hunkIDs[i] = h.HunkID
+	}
+
+	plan := &models.CommitPlan{
+		Commits: []models.CommitUnit{
+			{ID: "c1", Type: "refactor", Subject: "use fmt for printing", Hunks: hunkIDs},
+		},
+	}
+
+	// Without skip_hooks the rejecting hook should cause a failure
+	noSkip := NewGitExecutorWithHunks(dir, hunks, ExecutorOptions{})
+	err = noSkip.Execute(context.Background(), plan, false)
+	if err == nil {
+		t.Fatal("expected error from pre-commit hook rejection")
+	}
+	if !strings.Contains(err.Error(), "hook") {
+		t.Errorf("error should mention hook: %v", err)
+	}
+
+	// With skip_hooks the hook is bypassed
+	withSkip := NewGitExecutorWithHunks(dir, hunks, ExecutorOptions{SkipHooks: true})
+	if err := withSkip.Execute(context.Background(), plan, false); err != nil {
+		t.Fatalf("execute with skip_hooks should succeed: %v", err)
 	}
 
 	logs := gitLog(t, dir)

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -38,6 +39,9 @@ func runApply(cmd *cobra.Command, args []string) error {
 	dryRun := !yesFlag
 
 	if !dryRun {
+		if err := preflightCheck(); err != nil {
+			return err
+		}
 		if err := checkProtectedBranch(); err != nil {
 			return err
 		}
@@ -54,6 +58,10 @@ func runApply(cmd *cobra.Command, args []string) error {
 	}
 
 	ui.Info("Found %d hunk(s) across the diff.\n", len(ec.Hunks))
+
+	if !dryRun && !cfg.Engine.SkipHooks {
+		warnIfHooksDetected()
+	}
 
 	cp, err := resolveCommitPlan(ctx, &ec)
 	if err != nil {
@@ -82,7 +90,11 @@ func runApply(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("getting working directory: %w", err)
 	}
 
-	executor := executors.NewGitExecutorWithHunks(cwd, ec.Hunks, cfg.Engine.SignCommits)
+	executor := executors.NewGitExecutorWithHunks(cwd, ec.Hunks, executors.ExecutorOptions{
+		SignCommits:  cfg.Engine.SignCommits,
+		CommitAuthor: cfg.Engine.CommitAuthor,
+		SkipHooks:    cfg.Engine.SkipHooks,
+	})
 	if err := executor.Execute(ctx, cp, false); err != nil {
 		return fmt.Errorf("apply failed: %w", err)
 	}
@@ -91,29 +103,36 @@ func runApply(cmd *cobra.Command, args []string) error {
 
 	ui.Success("\n✓ Successfully applied %d commit(s).\n", len(cp.Commits))
 
+	remote := cfg.Engine.RemoteName
+	if remote == "" {
+		remote = "origin"
+	}
 	branch, _ := currentBranch()
 
 	if cfg.Engine.AutoPush && branch != "" {
-		if hasUpstream(branch) {
-			ui.Info("Pushing to origin...\n")
-			if err := pushBranch(); err != nil {
+		if !remoteExists(remote) {
+			ui.Warn("Remote %q not found. Skipping push.\n", remote)
+			ui.Dim("  Add a remote: git remote add %s <url>\n", remote)
+		} else if hasUpstream(branch) {
+			ui.Info("Pushing to %s...\n", remote)
+			if err := pushBranch(remote); err != nil {
 				ui.Warn("Push failed: %v\n", err)
 				ui.Dim("  You can push manually: git push\n")
 			} else {
-				ui.Success("✓ Pushed to origin.\n")
+				ui.Success("✓ Pushed to %s.\n", remote)
 			}
 		} else {
 			ui.Info("Pushing and setting upstream...\n")
-			if err := pushBranchWithUpstream(branch); err != nil {
+			if err := pushBranchWithUpstream(remote, branch); err != nil {
 				ui.Warn("Push failed: %v\n", err)
-				ui.Dim("  You can push manually: git push --set-upstream origin %s\n", branch)
+				ui.Dim("  You can push manually: git push --set-upstream %s %s\n", remote, branch)
 			} else {
-				ui.Success("✓ Pushed to origin/%s.\n", branch)
+				ui.Success("✓ Pushed to %s/%s.\n", remote, branch)
 			}
 		}
 	} else if branch != "" && !hasUpstream(branch) {
 		ui.Dim("\nTo push this branch:\n")
-		ui.Dim("  git push --set-upstream origin %s\n", branch)
+		ui.Dim("  git push --set-upstream %s %s\n", remote, branch)
 	}
 
 	return nil
@@ -190,16 +209,112 @@ func hasUpstream(branch string) bool {
 	return err == nil
 }
 
-func pushBranch() error {
-	out, err := exec.Command("git", "push").CombinedOutput()
+func preflightCheck() error {
+	gitDir := findGitDir()
+	if gitDir == "" {
+		return nil
+	}
+
+	checks := []struct {
+		path    string
+		isDir   bool
+		message string
+		hint    string
+	}{
+		{filepath.Join(gitDir, "MERGE_HEAD"), false,
+			"Repository is in the middle of a merge.",
+			"Resolve the merge first: git merge --continue  OR  git merge --abort"},
+		{filepath.Join(gitDir, "CHERRY_PICK_HEAD"), false,
+			"Repository is in the middle of a cherry-pick.",
+			"Resolve it first: git cherry-pick --continue  OR  git cherry-pick --abort"},
+		{filepath.Join(gitDir, "BISECT_LOG"), false,
+			"Repository is in the middle of a bisect.",
+			"Finish the bisect first: git bisect reset"},
+		{filepath.Join(gitDir, "rebase-merge"), true,
+			"Repository is in the middle of a rebase.",
+			"Resolve the rebase first: git rebase --continue  OR  git rebase --abort"},
+		{filepath.Join(gitDir, "rebase-apply"), true,
+			"Repository is in the middle of a rebase or am.",
+			"Resolve it first: git rebase --continue  OR  git rebase --abort"},
+	}
+
+	for _, c := range checks {
+		var exists bool
+		if c.isDir {
+			info, err := os.Stat(c.path)
+			exists = err == nil && info.IsDir()
+		} else {
+			_, err := os.Stat(c.path)
+			exists = err == nil
+		}
+		if exists {
+			ui.Error("%s\n", c.message)
+			ui.Dim("  %s\n", c.hint)
+			return fmt.Errorf("unsafe repo state: %s", c.message)
+		}
+	}
+
+	out, err := exec.Command("git", "diff", "--name-only", "--diff-filter=U").Output()
+	if err == nil && len(strings.TrimSpace(string(out))) > 0 {
+		ui.Error("Repository has unmerged paths (merge conflicts).\n")
+		ui.Dim("  Resolve all conflicts, then run: git add <files> && git commit\n")
+		return fmt.Errorf("unsafe repo state: unmerged paths")
+	}
+
+	return nil
+}
+
+func findGitDir() string {
+	out, err := exec.Command("git", "rev-parse", "--git-dir").Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
+func remoteExists(remote string) bool {
+	return exec.Command("git", "remote", "get-url", remote).Run() == nil
+}
+
+func warnIfHooksDetected() {
+	var sources []string
+
+	if info, err := os.Stat(".husky"); err == nil && info.IsDir() {
+		sources = append(sources, "husky")
+	}
+	if _, err := os.Stat(".pre-commit-config.yaml"); err == nil {
+		sources = append(sources, "pre-commit")
+	}
+	if data, err := os.ReadFile("package.json"); err == nil {
+		if strings.Contains(string(data), "\"husky\"") {
+			if len(sources) == 0 || sources[0] != "husky" {
+				sources = append(sources, "husky (package.json)")
+			}
+		}
+	}
+	gitDir := findGitDir()
+	if gitDir != "" {
+		if info, err := os.Stat(filepath.Join(gitDir, "hooks", "pre-commit")); err == nil && !info.IsDir() {
+			sources = append(sources, "git hooks")
+		}
+	}
+
+	if len(sources) > 0 {
+		ui.Dim("Detected commit hooks (%s). If commits are rejected, set skip_hooks: true in config.\n",
+			strings.Join(sources, ", "))
+	}
+}
+
+func pushBranch(remote string) error {
+	out, err := exec.Command("git", "push", remote).CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("%s", strings.TrimSpace(string(out)))
 	}
 	return nil
 }
 
-func pushBranchWithUpstream(branch string) error {
-	out, err := exec.Command("git", "push", "--set-upstream", "origin", branch).CombinedOutput()
+func pushBranchWithUpstream(remote, branch string) error {
+	out, err := exec.Command("git", "push", "--set-upstream", remote, branch).CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("%s", strings.TrimSpace(string(out)))
 	}

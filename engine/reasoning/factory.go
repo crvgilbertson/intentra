@@ -2,6 +2,7 @@ package reasoning
 
 import (
 	"fmt"
+	"os"
 
 	"github.com/crvgilbertson/intentra/config"
 )
@@ -17,18 +18,27 @@ import (
 func NewEngineFromConfig(cfg config.AIConfig) (ReasoningEngine, error) {
 	switch cfg.Provider {
 	case "openai", "":
+		if err := requireEnvVar("OPENAI_API_KEY", "openai"); err != nil {
+			return nil, err
+		}
 		if cfg.BaseURL != "" {
 			return NewOpenAIEngineWithBaseURL(cfg.Model, cfg.Temperature, cfg.BaseURL), nil
 		}
 		return NewOpenAIEngine(cfg.Model, cfg.Temperature), nil
 
 	case "anthropic":
+		if err := requireEnvVar("ANTHROPIC_API_KEY", "anthropic"); err != nil {
+			return nil, err
+		}
 		if cfg.BaseURL != "" {
 			return NewAnthropicEngineWithBaseURL(cfg.Model, cfg.Temperature, cfg.BaseURL), nil
 		}
 		return NewAnthropicEngine(cfg.Model, cfg.Temperature), nil
 
 	case "gemini":
+		if err := requireEnvVar("GEMINI_API_KEY", "gemini"); err != nil {
+			return nil, err
+		}
 		baseURL := cfg.BaseURL
 		if baseURL == "" {
 			baseURL = "https://generativelanguage.googleapis.com/v1beta/openai/"
@@ -45,4 +55,14 @@ func NewEngineFromConfig(cfg config.AIConfig) (ReasoningEngine, error) {
 	default:
 		return nil, fmt.Errorf("unknown AI provider %q (supported: openai, anthropic, gemini, ollama)", cfg.Provider)
 	}
+}
+
+func requireEnvVar(envVar, provider string) error {
+	if os.Getenv(envVar) == "" {
+		return fmt.Errorf(
+			"%s not set\n\n  Set it for the %s provider:\n    export %s=<your-key>\n\n  Or switch providers in .intentra/config.yaml:\n    ai:\n      provider: ollama  # no key required for local models",
+			envVar, provider, envVar,
+		)
+	}
+	return nil
 }
