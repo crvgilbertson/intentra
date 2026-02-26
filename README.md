@@ -150,6 +150,8 @@ Found 7 hunk(s) across the diff.
     2 hunk(s)  →  src/core/utils.go
 
   ─────────────────────────────────────────────────────
+
+  Confidence: high (100%)
 Plan saved to .intentra/plan.json
 ```
 
