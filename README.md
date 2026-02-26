@@ -607,8 +607,12 @@ Intentra enforces a strict trust model:
 - **Plan never mutates** -- `intentra plan` is read-only. It collects the diff and reasons about it but never changes any files or git state.
 - **Dry-run by default** -- `intentra apply` without `--yes` shows the plan and exits.
 - **Protected branch check** -- `apply --yes` refuses to commit to branches listed in `protected_branches` (default: `main`, `master`).
+- **Patch pre-check** -- Each commit's patch is validated with `git apply --check` before staging, catching malformed patches before they can cause a partial apply. Empty patches are rejected immediately.
 - **Atomic apply with full rollback** -- Each commit is staged via `git apply --cached` and committed individually. If any step fails, the entire operation is rolled back: all commits are undone with `git reset --soft`, and the index is restored to its pre-apply state. No partial applies. No orphaned commits.
+- **Graceful interrupt handling** -- Pressing Ctrl+C (SIGINT/SIGTERM) during `apply` triggers a clean rollback of all commits applied so far, just like a step failure. The process exits with an error, not a corrupt state.
+- **Working tree drift detection** -- Between each commit, Intentra fingerprints the files touched by the plan using OS-level metadata (size + mtime). If any file is modified externally mid-apply, the operation aborts with rollback. This detection is immune to git index changes caused by Intentra's own operations.
 - **Clean index isolation** -- Before applying, the index is reset to HEAD. Pre-existing staged changes cannot leak into commits.
+- **Cached plan structural validation** -- When loading a cached plan from `.intentra/plan.json`, the plan is validated against business rules before use. A stale or corrupted plan file is rejected with a clear error.
 - **Hook awareness** -- Intentra detects common hook managers (husky, pre-commit framework, git hooks) and warns before applying. If a hook rejects a commit, the error message suggests `skip_hooks: true`. When `skip_hooks` is enabled, `--no-verify` is passed to `git commit`.
 - **Remote validation** -- When `auto_push` is enabled, Intentra verifies the configured remote exists before attempting to push, avoiding cryptic git errors.
 - **No history rewriting** -- No rebase, no amend, no force-push. Intentra only creates new commits.
