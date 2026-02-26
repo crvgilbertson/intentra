@@ -51,9 +51,16 @@ func (e *GitExecutor) snapshotState(ctx context.Context) (*indexSnapshot, error)
 
 // rollback undoes any commits made during apply and restores the index.
 func (e *GitExecutor) rollback(ctx context.Context, snap *indexSnapshot, committedCount int) error {
-	if committedCount > 0 && snap.originalHead != "" {
-		if err := e.git(ctx, "reset", "--soft", snap.originalHead); err != nil {
-			return fmt.Errorf("reset HEAD: %w", err)
+	if committedCount > 0 {
+		if snap.originalHead != "" {
+			if err := e.git(ctx, "reset", "--soft", snap.originalHead); err != nil {
+				return fmt.Errorf("reset HEAD: %w", err)
+			}
+		} else {
+			// No commits existed before apply; orphan the branch to undo all commits.
+			if err := e.git(ctx, "update-ref", "-d", "HEAD"); err != nil {
+				return fmt.Errorf("delete HEAD ref: %w", err)
+			}
 		}
 	}
 	if err := e.git(ctx, "read-tree", snap.indexTree); err != nil {
@@ -109,6 +116,10 @@ func (e *GitExecutor) Execute(ctx context.Context, plan models.Plan, dryRun bool
 func (e *GitExecutor) applyCommit(ctx context.Context, commit models.CommitUnit, hunkMap map[string]models.Hunk) error {
 	patch := buildPatch(commit, hunkMap)
 
+	if strings.TrimSpace(patch) == "" {
+		return fmt.Errorf("commit %s produced an empty patch (no matching hunks)", commit.ID)
+	}
+
 	tmpFile, err := os.CreateTemp("", "intentra-patch-*.patch")
 	if err != nil {
 		return fmt.Errorf("creating temp patch: %w", err)
@@ -120,6 +131,10 @@ func (e *GitExecutor) applyCommit(ctx context.Context, commit models.CommitUnit,
 		return fmt.Errorf("writing patch: %w", err)
 	}
 	tmpFile.Close()
+
+	if err := e.git(ctx, "apply", "--check", "--cached", tmpFile.Name()); err != nil {
+		return fmt.Errorf("patch for commit %s will not apply cleanly: %w", commit.ID, err)
+	}
 
 	if err := e.git(ctx, "apply", "--cached", tmpFile.Name()); err != nil {
 		return fmt.Errorf("git apply --cached: %w", err)
@@ -219,6 +234,25 @@ func isHookError(err error) bool {
 	return false
 }
 
+// planFilesFingerprint builds a fingerprint from the mtime and size of each
+// file touched by the commit plan. Because git apply --cached and git commit
+// never modify working tree files, this fingerprint stays stable throughout
+// the apply. An external process modifying any of these files will change
+// the mtime, which we detect.
+func (e *GitExecutor) planFilesFingerprint(filePaths []string) string {
+	var sb strings.Builder
+	for _, fp := range filePaths {
+		fullPath := filepath.Join(e.repoDir, fp)
+		info, err := os.Stat(fullPath)
+		if err != nil {
+			fmt.Fprintf(&sb, "%s:absent\n", fp)
+			continue
+		}
+		fmt.Fprintf(&sb, "%s:%d:%d\n", fp, info.Size(), info.ModTime().UnixNano())
+	}
+	return sb.String()
+}
+
 func (e *GitExecutorWithHunks) Execute(ctx context.Context, plan models.Plan, dryRun bool) error {
 	cp, ok := plan.(*models.CommitPlan)
 	if !ok {
@@ -243,6 +277,22 @@ func (e *GitExecutorWithHunks) Execute(ctx context.Context, plan models.Plan, dr
 		}
 	}
 
+	planFileSet := make(map[string]bool)
+	for _, commit := range cp.Commits {
+		for _, hid := range commit.Hunks {
+			if h, ok := hunkMap[hid]; ok {
+				planFileSet[h.FilePath] = true
+			}
+		}
+	}
+	planFilePaths := make([]string, 0, len(planFileSet))
+	for fp := range planFileSet {
+		planFilePaths = append(planFilePaths, fp)
+	}
+	sort.Strings(planFilePaths)
+
+	baselineWT := e.planFilesFingerprint(planFilePaths)
+
 	for i, commit := range cp.Commits {
 		if dryRun {
 			fmt.Printf("[dry-run] commit %d/%d: %s\n", i+1, len(cp.Commits), commit.FullSubject())
@@ -252,6 +302,16 @@ func (e *GitExecutorWithHunks) Execute(ctx context.Context, plan models.Plan, dr
 				}
 			}
 			continue
+		}
+
+		if i > 0 {
+			currentWT := e.planFilesFingerprint(planFilePaths)
+			if currentWT != baselineWT {
+				if rollbackErr := e.rollback(ctx, snap, i); rollbackErr != nil {
+					return fmt.Errorf("working tree changed externally during apply (additionally, rollback failed: %v)", rollbackErr)
+				}
+				return fmt.Errorf("aborting: working tree changed externally between commit %d and %d (rolled back %d commit(s))", i, i+1, i)
+			}
 		}
 
 		if err := e.applyCommit(ctx, commit, hunkMap); err != nil {
