@@ -20,6 +20,7 @@ A deterministic, AI-powered code change reasoning engine. Intentra analyzes your
 - [Architecture](#architecture)
   - [Data Flow](#data-flow)
   - [Two-Pass Planning Pipeline](#two-pass-planning-pipeline)
+  - [Scaling for Large Diffs](#scaling-for-large-diffs)
   - [Safety Model](#safety-model)
   - [Project Structure](#project-structure)
 - [Development](#development)
@@ -34,17 +35,17 @@ A deterministic, AI-powered code change reasoning engine. Intentra analyzes your
 
 1. **Context** -- Intentra runs `git diff HEAD` on your working tree and parses the output into individual hunks, capturing both staged and unstaged changes. Each hunk receives a stable, deterministic ID via `sha256(filePath + header + patch)`. Untracked files are detected separately and included as synthetic diffs. Files matching `ignore_patterns` in your config are excluded.
 
-2. **Clustering** -- The hunks are sent to an LLM with strict JSON schema enforcement. The model groups related hunks by intent: which changes belong together in a single atomic commit. Supports OpenAI, Anthropic Claude, and any OpenAI-compatible endpoint (Ollama, vLLM, LM Studio). Large patches are automatically summarized (first/last N lines) to reduce token usage -- configurable via `max_hunk_lines`. A phased progress indicator shows the current stage ("Clustering N hunks...", "Generating commit messages...") with elapsed time. If the model drops any hunks, a targeted rescue call recovers them (see [Orphan Hunk Recovery](#two-pass-planning-pipeline)).
+2. **Clustering** -- The hunks are sent to an LLM with strict JSON schema enforcement. The model groups related hunks by intent: which changes belong together in a single atomic commit. Supports OpenAI, Anthropic Claude, and any OpenAI-compatible endpoint (Ollama, vLLM, LM Studio). Large patches are automatically summarized (first/last N lines) to reduce token usage -- configurable via `max_hunk_lines`. A phased progress indicator shows the current stage ("Clustering N hunks...", "Generating commit messages...") with elapsed time. If the model drops any hunks, a targeted rescue call recovers them (see [Orphan Hunk Recovery](#two-pass-planning-pipeline)). Intentra automatically scales its clustering strategy based on diff size (see [Scaling for Large Diffs](#scaling-for-large-diffs)).
 
 3. **Messaging** -- For each cluster, the LLM generates Conventional Commit metadata: type, scope, subject, body, breaking change flags, and footers. All output is schema-validated. Both passes support configurable retries with correction prompts.
 
 4. **Ordering** -- Commits are reordered by dependency: foundational changes (models, types, interfaces) are applied before higher-level consumers (planners, validators, CLI). This ensures the repository compiles at every commit boundary.
 
-5. **Validation** -- The resulting `CommitPlan` is validated against business rules: every hunk is assigned exactly once, commit types and scopes are from the allowed set, subject length is within limits, breaking changes have proper footers, and more. Warnings are printed when multiple commits touch the same file.
+5. **Validation** -- The resulting `CommitPlan` is validated against business rules: every hunk is assigned exactly once, commit types and scopes are from the allowed set, subject length is within limits, breaking changes have proper footers, and more. A confidence score assesses overall plan quality based on file overlap, hunk entanglement, and commit spread -- displayed after the plan summary.
 
 6. **Caching** -- The validated plan is saved to `.intentra/plan.json` with a diff fingerprint (SHA256 of all hunk IDs). If you run `apply` without changing your working tree, the cached plan is reused instantly -- no second LLM call. If the diff changes, the stale plan is detected and a fresh one is generated.
 
-7. **Execution** -- Only when you explicitly pass `--yes` does Intentra touch git. It snapshots the current HEAD and index, resets to a clean state, then stages each commit's hunks via `git apply --cached` and commits them. If anything fails, all commits are rolled back and the index is restored to its pre-apply state. No partial applies. No data corruption.
+7. **Execution** -- Only when you explicitly pass `--yes` does Intentra touch git. It snapshots the current HEAD and index, resets to a clean state, then validates each patch with `git apply --check` before staging with `git apply --cached` and committing. Between commits, working tree files are fingerprinted (OS-level mtime/size) to detect external modifications. If anything fails -- or if you press Ctrl+C -- all commits are rolled back and the index is restored to its pre-apply state. No partial applies. No data corruption.
 
 ---
 
@@ -396,6 +397,7 @@ engine:
     remote_name: origin
     commit_author: ""
     skip_hooks: false
+    batch_threshold: 40
 ```
 
 ### Configuration Reference
@@ -425,6 +427,7 @@ engine:
 | `engine` | `remote_name` | string | `"origin"` | Git remote to push to when `auto_push` is enabled |
 | `engine` | `commit_author` | string | `""` | Override commit author (e.g., `"Name <email>"`) — empty uses git default |
 | `engine` | `skip_hooks` | bool | `false` | Skip pre-commit hooks with `--no-verify` |
+| `engine` | `batch_threshold` | int | `40` | Hunk/file-unit count above which clustering switches strategy (file-level grouping, then batched clustering). See [Scaling for Large Diffs](#scaling-for-large-diffs). |
 
 If no config file is found, Intentra uses these defaults automatically.
 
@@ -582,6 +585,20 @@ Both passes use the generic `CallWithRetry[T]` mechanism: if the LLM output fail
 
 After the LLM produces the plan, commits are deterministically reordered by package dependency. Each commit's hunks are inspected to determine which layer of the codebase they touch (models → context → reasoning → planners → validators → executors → cmd). Commits touching foundational layers are applied first, ensuring the repository compiles at every commit boundary. This is a pure, deterministic step -- no LLM involved.
 
+### Scaling for Large Diffs
+
+Intentra automatically selects a clustering strategy based on diff size, controlled by `batch_threshold` (default: 40):
+
+| Diff size | Strategy | What happens |
+|-----------|----------|-------------|
+| ≤ threshold hunks | **Direct** | Each hunk is sent individually with compact IDs (h1, h2, ...) |
+| > threshold hunks, ≤ threshold files | **File-level** | Hunks are grouped by file into units (f1, f2, ...). The LLM clusters file units, then they're expanded back to hunk-level assignments. |
+| > threshold files | **Batched** | File units are split into directory-proximate batches. Each batch is clustered independently, then an LLM merge pass reconciles groups across batches. Falls back to concatenation if merge fails. |
+
+**Compact prompt IDs** -- In all strategies, 64-character SHA256 hunk IDs are replaced with short tokens (h1, h2, f1, f2, ...) in the LLM prompt. This saves ~4,500 tokens at 100 hunks and dramatically reduces duplicate/omission errors. Real IDs are mapped back after the LLM responds.
+
+**Duplicate repair** -- If the LLM assigns the same hunk to multiple groups (common at high hunk counts), duplicates are silently deduplicated (first assignment wins) rather than treated as a hard error. Missing hunks are then recovered via the standard [orphan recovery](#two-pass-planning-pipeline) pipeline.
+
 ### Safety Model
 
 Intentra enforces a strict trust model:
@@ -656,7 +673,9 @@ intentra/
     │
     ├── validators/                  Business rule validation (NO git calls)
     │   ├── commit_validator.go      ValidateCommitPlan(), WarnFileOverlap()
-    │   └── commit_validator_test.go
+    │   ├── commit_validator_test.go
+    │   ├── confidence.go            PlanConfidence scoring (overlap, entanglement, spread)
+    │   └── confidence_test.go
     │
     └── executors/                   Git operations (NO LLM calls)
         ├── executor.go              Executor interface
@@ -689,13 +708,13 @@ go test ./engine/validators/ -v
 go test ./engine/executors/ -v
 ```
 
-The test suite includes:
+The test suite includes 74 tests across 5 packages:
 
 | Package | Tests | Coverage |
 |---------|-------|----------|
-| `engine/context` | 12 | Diff parsing (single file, multi-file, binary skip, renames, deleted files, mode-only changes, mode+content changes, empty), hunk hashing (stability, uniqueness, format) |
-| `engine/planners` | 12 | Full planner flow with mocked LLM, empty hunks, clustering validation (missing/duplicate/unknown hunks), messaging validation (missing groups), commit dependency reordering, package layer scoring, hunk summarization (no-op, disabled, truncated) |
-| `engine/validators` | 13 | Valid plan, missing hunk, duplicate hunk, unknown hunk, bad type, bad scope, subject too long, trailing period, uppercase subject, breaking without footer, breaking with footer, empty scopes, multiple errors |
+| `engine/context` | 16 | Diff parsing (single file, multi-file, binary skip, renames, deleted files, mode-only changes, mode+content changes, empty, hunk ID uniqueness), hunk hashing (stability, uniqueness, format), fuzz tests (diff parsing, file path extraction, hunk splitting) |
+| `engine/planners` | 27 | Full planner flow with mocked LLM, empty hunks, clustering validation (missing/duplicate/unknown hunks), messaging validation (missing groups), commit dependency reordering, package layer scoring, hunk summarization (no-op, disabled, truncated), compact ID mapping (build, remap, validation, unknowns, too many groups), file-level pre-grouping, file unit expansion (pure and mixed groups), batch splitting (count-based and directory-proximate), batch concatenation, duplicate deduplication, clustering input builders |
+| `engine/validators` | 20 | Valid plan, missing hunk, duplicate hunk, unknown hunk, bad type, bad scope, subject too long, trailing period, uppercase subject, breaking without footer, breaking with footer, empty scopes, multiple errors, confidence scoring (high for clean plans, file overlap penalty, entanglement penalty, wide-spread penalty, range overlap, hunk range parsing, same-commit entanglement) |
 | `engine/executors` | 8 | Apply single commit, dry-run, fail-and-restore, partial apply rollback, deleted file commit, staged changes included, commit author override, skip hooks bypass |
 | `cmd` | 3 | PR title/body generation from commit plan (single commit, multiple commits, type summarization) |
 
@@ -759,15 +778,25 @@ The individual features (v0.1--v0.4) drive developer adoption. The team features
 - **Remote branch protection awareness**: before pushing, Intentra checks GitHub branch protection via `gh api` and warns if the branch requires PRs. Graceful degradation if `gh` is not installed.
 - **`gh` CLI integration**: shared helpers for authentication validation, repo info, and branch protection checks. Used by `push`, `pr`, and `apply`.
 - **Refactored git helpers**: push, branch, remote, and preflight logic extracted to shared module for reuse across commands
+- **Scaling for large diffs (100+ hunks)**: three-tier clustering strategy -- compact prompt IDs, file-level pre-grouping, and batched clustering with LLM merge pass. Configurable via `batch_threshold` (default: 40). See [Scaling for Large Diffs](#scaling-for-large-diffs).
+- **Compact prompt IDs**: 64-char SHA256 hunk IDs replaced with short tokens (h1, h2, ...) in LLM prompts, saving thousands of tokens and reducing LLM bookkeeping errors
+- **Duplicate hunk repair**: duplicate hunk assignments across groups are auto-deduplicated instead of causing a hard error
+- **Confidence scoring**: each plan is scored for quality based on file overlap, hunk entanglement (adjacent-line edits in different commits), and commit spread. Displayed after the plan summary as high/medium/low with specific warnings.
+- **Patch pre-check**: each commit's patch is validated with `git apply --check` before staging, catching malformed patches early
+- **Empty patch guard**: commits that produce zero-byte patches are rejected immediately instead of creating empty commits
+- **Working tree drift detection**: OS-level file fingerprinting (size + mtime) detects external modifications between commits during apply, immune to git index changes from Intentra's own operations
+- **Graceful interrupt handling**: Ctrl+C (SIGINT/SIGTERM) during `apply` triggers clean rollback of all commits applied so far
+- **Cached plan validation**: plans loaded from `.intentra/plan.json` are structurally validated before use
+- **Command timeouts**: all git and `gh` CLI calls use `exec.CommandContext` with timeouts (30s local, 120s network) to prevent indefinite hangs
+- **Fuzz tests**: diff parser now includes fuzz tests for edge cases in unified diff parsing
 
 ### v0.4.0 -- Commit Intelligence
 
 - Risk scoring per commit (sensitive areas: auth, database, payments, config)
-- Entanglement detection (warning when a commit touches unrelated subsystems)
-- Confidence score for clustering quality (how sure is the model about the grouping?)
 - **Import-graph analysis**: replace directory-name heuristics with actual import graph for commit dependency ordering
 - **Cross-session plan memory**: optionally remember rejected plans so subsequent runs can avoid similar groupings
 - `intentra plan --analyze` flag for detailed per-commit breakdown
+- **Streaming LLM output**: stream clustering and messaging results as they arrive, reducing perceived latency for large diffs
 
 ### v0.5.0 -- Ship & PR Intelligence
 
