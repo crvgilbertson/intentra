@@ -541,26 +541,28 @@ New models work immediately -- no Intentra update required. Just change the `mod
 CLI Command (plan / apply)
     |
     v
-Context Builder ---- git diff, git log ---> EngineContext { Hunks, RecentCommits, Config }
-    |
+Context Builder ---- git diff HEAD, git ls-files --others ---> EngineContext { Hunks, RecentCommits, Config }
+    |                 (staged + unstaged + untracked)
+    |                 filter by ignore_patterns
     v
-Plan Cache Check ---- .intentra-plan.json + diff fingerprint
+Plan Cache Check ---- .intentra/plan.json + diff fingerprint
     |                  match? --> reuse cached plan (skip LLM)
     |                  stale/missing? --> continue to reasoning
     v
 Reasoning Engine --- LLM structured output (OpenAI / Anthropic / Ollama) ---> JSON (schema-validated)
-    |
+    |                 with configurable retries and timeout
     v
 Commit Planner ---- two-pass (cluster + message) + dependency reorder ---> CommitPlan
+    |                 max_commits enforced
+    v
+Validator ---- business rules + file overlap warnings ---> pass / error
     |
     v
-Validator ---- business rules ---> pass / error
+Plan Cache Save ---- .intentra/plan.json (for reuse by apply)
     |
     v
-Plan Cache Save ---- .intentra-plan.json (for reuse by apply)
-    |
-    v
-Executor ---- git apply --cached + git commit ---> commits created (apply --yes only)
+Executor ---- snapshot HEAD + index, reset index, git apply --cached + git commit ---> commits created
+              on failure: git reset --soft + read-tree (full rollback, no orphaned commits)
 ```
 
 ### Two-Pass Planning Pipeline
@@ -569,13 +571,21 @@ Intentra uses a two-pass approach for deterministic commit planning:
 
 **Pass 1 -- Intent Clustering**
 
-The LLM receives all hunks (file path, header, patch content) and groups them by logical intent. The output is a strict JSON schema: an array of groups, each containing a stable group ID and a list of hunk IDs. Validation ensures every hunk is assigned exactly once with no duplicates and no omissions.
+The LLM receives all hunks (file path, header, patch content) and groups them by logical intent. The output is a strict JSON schema: an array of groups, each containing a stable group ID and a list of hunk IDs. Validation ensures no duplicates and no unknown IDs. The number of groups is capped by `max_commits`.
+
+**Orphan Hunk Recovery** -- With large diffs (20+ hunks), LLMs occasionally drop one or more hunk IDs from their response. Intentra handles this with a three-tier recovery strategy:
+
+1. **Prevention** -- The prompt includes an explicit hunk count and a numbered checklist of all IDs at the end of the input, instructing the model to cross-reference before responding.
+2. **Targeted rescue call** -- If any hunks are still missing after the main clustering call, a small, focused LLM call is made with *only* the orphaned hunks and the existing group descriptions. The model assigns each orphan to the most semantically appropriate group. This is cheap (tiny context) and accurate (the LLM decides, not a heuristic).
+3. **File-path fallback** -- If the rescue call also fails (e.g., timeout or API error), orphans are assigned deterministically to the group that already contains the most hunks from the same file. If no file match exists, the largest group is used.
+
+This means Intentra will produce a valid plan even when the LLM is imperfect. The trade-off: tier 3 uses file proximity rather than semantic understanding, so an orphan may land in a sub-optimal commit. You can always re-run `plan` to get a fresh clustering.
 
 **Pass 2 -- Message Generation**
 
 For each cluster, the LLM generates Conventional Commit metadata: type, scope, subject, body, breaking flag, and footers. The output is again schema-validated. Recent commit history from the repo is provided as style reference.
 
-Both passes use the generic `CallWithRetry[T]` mechanism: if the LLM output fails validation, it retries once with a correction prompt. If the retry also fails, the operation aborts cleanly.
+Both passes use the generic `CallWithRetry[T]` mechanism: if the LLM output fails validation, it retries up to `max_retries` times with a correction prompt. If all retries fail, the operation aborts cleanly.
 
 **Post-Processing -- Dependency Ordering**
 
@@ -587,9 +597,11 @@ Intentra enforces a strict trust model:
 
 - **Plan never mutates** -- `intentra plan` is read-only. It collects the diff and reasons about it but never changes any files or git state.
 - **Dry-run by default** -- `intentra apply` without `--yes` shows the plan and exits.
-- **Atomic apply** -- Each commit is staged via `git apply --cached` and committed individually. If any step fails, the entire operation aborts and the git index is restored to its pre-apply snapshot.
+- **Protected branch check** -- `apply --yes` refuses to commit to branches listed in `protected_branches` (default: `main`, `master`).
+- **Atomic apply with full rollback** -- Each commit is staged via `git apply --cached` and committed individually. If any step fails, the entire operation is rolled back: all commits are undone with `git reset --soft`, and the index is restored to its pre-apply state. No partial applies. No orphaned commits.
+- **Clean index isolation** -- Before applying, the index is reset to HEAD. Pre-existing staged changes cannot leak into commits.
 - **No history rewriting** -- No rebase, no amend, no force-push. Intentra only creates new commits.
-- **Plan caching** -- `plan` saves the result to `.intentra-plan.json` with a diff fingerprint. `apply` reuses it if the diff is unchanged, avoiding redundant LLM calls and ensuring the same plan is applied that was reviewed. If the diff changes, the stale plan is automatically discarded.
+- **Plan caching** -- `plan` saves the result to `.intentra/plan.json` with a diff fingerprint. `apply` reuses it if the diff is unchanged, avoiding redundant LLM calls and ensuring the same plan is applied that was reviewed. If the diff changes, the stale plan is automatically discarded.
 - **Strict layer separation** -- The reasoning layer (LLM) cannot execute git commands. The executor layer cannot call the LLM. This is enforced architecturally, not by convention.
 
 ### Project Structure
@@ -599,28 +611,36 @@ intentra/
 ├── main.go                          Entry point
 ├── go.mod
 │
+├── .intentra/                       Runtime directory (created by intentra init)
+│   ├── config.yaml                  Project config (commit to repo)
+│   ├── plan.json                    Cached plan (gitignored)
+│   └── .gitignore                   Ignores ephemeral files
+│
 ├── cmd/                             CLI layer (Cobra commands, no business logic)
-│   ├── root.go                      Root command, --config flag, config loading
+│   ├── root.go                      Root command, --config flag, legacy config fallback
 │   ├── plan.go                      intentra plan [--json], plan caching
 │   ├── apply.go                     intentra apply [--yes], cache-aware plan resolution
-│   ├── init.go                      intentra init
+│   ├── init.go                      intentra init (creates .intentra/ directory)
 │   └── ui/
-│       └── styles.go                Colored terminal output (fatih/color)
+│       └── styles.go                Colored output, spinner, plan summary (fatih/color)
 │
 ├── config/                          Configuration loading and defaults
-│   └── config.go                    EngineConfig, YAML load/write
+│   └── config.go                    EngineConfig, YAML load/write, directory helpers
+│
+├── internal/
+│   └── version.go                   Version constant
 │
 └── engine/
     ├── context/                     Git state collection, pure diff parsing
-    │   ├── diff_parser.go           Unified diff -> []Hunk
+    │   ├── diff_parser.go           Unified diff -> []Hunk (new/deleted/renamed/mode-change aware)
     │   ├── diff_parser_test.go
     │   ├── hunk_hasher.go           sha256-based stable hunk IDs
     │   ├── hunk_hasher_test.go
-    │   └── repo_context.go          BuildContext() -> EngineContext
+    │   └── repo_context.go          BuildContext(): git diff HEAD + untracked + ignore filtering
     │
     ├── models/                      Shared domain types (no logic)
-    │   ├── hunk.go                  Hunk { HunkID, FilePath, Header, Patch, Summary }
-    │   ├── commit_plan.go           CommitPlan, CommitUnit, DiffFingerprint, Plan interface
+    │   ├── hunk.go                  Hunk { HunkID, FilePath, Header, Patch, NewFile, DeletedFile, ... }
+    │   ├── commit_plan.go           CommitPlan, CommitUnit, CommitStyle, DiffFingerprint, Plan interface
     │   └── change_intent.go         Reserved for future capabilities
     │
     ├── reasoning/                   LLM abstraction (NO git calls)
@@ -628,22 +648,22 @@ intentra/
     │   ├── openai.go                OpenAI + OpenAI-compatible implementation
     │   ├── anthropic.go             Anthropic Claude implementation (tool_use)
     │   ├── factory.go               Provider selection from config
-    │   └── retry.go                 Generic CallWithRetry[T] with correction prompts
+    │   └── retry.go                 Generic CallWithRetry[T] with configurable retries
     │
     ├── planners/                    Plan generation (NO git calls)
     │   ├── planner.go               Planner interface
-    │   ├── commit_planner.go        Two-pass CommitPlanner implementation
+    │   ├── commit_planner.go        Two-pass CommitPlanner with timeout and max_commits
     │   ├── commit_schema.go         JSON schemas for clustering + messaging
     │   └── commit_planner_test.go
     │
     ├── validators/                  Business rule validation (NO git calls)
-    │   ├── commit_validator.go      ValidateCommitPlan()
+    │   ├── commit_validator.go      ValidateCommitPlan(), WarnFileOverlap()
     │   └── commit_validator_test.go
     │
     └── executors/                   Git operations (NO LLM calls)
         ├── executor.go              Executor interface
-        ├── git_executor.go          git apply --cached + commit, abort/restore
-        └── git_executor_test.go     Integration tests in temp repos
+        ├── git_executor.go          Snapshot, apply, commit, full rollback, GPG signing
+        └── git_executor_test.go     Integration tests: apply, dry-run, rollback, delete, staged
 ```
 
 ---
@@ -675,10 +695,10 @@ The test suite includes:
 
 | Package | Tests | Coverage |
 |---------|-------|----------|
-| `engine/context` | 9 | Diff parsing (single file, multi-file, binary skip, renames, empty), hunk hashing (stability, uniqueness, format) |
+| `engine/context` | 12 | Diff parsing (single file, multi-file, binary skip, renames, deleted files, mode-only changes, mode+content changes, empty), hunk hashing (stability, uniqueness, format) |
 | `engine/planners` | 9 | Full planner flow with mocked LLM, empty hunks, clustering validation (missing/duplicate/unknown hunks), messaging validation (missing groups), commit dependency reordering, package layer scoring |
 | `engine/validators` | 13 | Valid plan, missing hunk, duplicate hunk, unknown hunk, bad type, bad scope, subject too long, trailing period, uppercase subject, breaking without footer, breaking with footer, empty scopes, multiple errors |
-| `engine/executors` | 3 | Apply single commit in temp repo, dry-run (no mutation), fail-and-restore (index recovery after bad patch) |
+| `engine/executors` | 6 | Apply single commit, dry-run, fail-and-restore, partial apply rollback, deleted file commit, staged changes included |
 
 All LLM calls are mocked in tests -- no network access required.
 
@@ -702,7 +722,7 @@ These boundaries are enforced by design and must not be violated:
 
 Intentra is designed as an extensible platform. The `Planner` interface is generic -- commit planning is the first implementation. Future capabilities will follow the same pattern: context -> reasoning -> plan -> validate -> execute.
 
-The individual features (v0.1--v0.4) drive developer adoption. The team features (v0.5--v0.6) drive enterprise value. v1.0.0 is the stability promise.
+The individual features (v0.1--v0.4) drive developer adoption. The team features (v0.5--v0.7) drive enterprise value. v1.0.0 is the stability promise.
 
 ### v0.1.0 -- Commit Planning (Released)
 
@@ -714,46 +734,63 @@ The individual features (v0.1--v0.4) drive developer adoption. The team features
 - Colored terminal output with type-coded commit summaries
 - Protected branch detection, dry-run by default, index restore on failure
 
-### v0.2.0 -- GitHub Integration
+### v0.2.0 -- Robustness & Configuration (Released)
 
+- **Staged change capture**: `git diff HEAD` now includes both staged and unstaged changes
+- **Full rollback on partial failure**: if commit N fails, all prior commits are undone — no orphaned commits
+- **Clean index isolation**: index is reset to HEAD before apply, preventing staged change leakage
+- **Deleted file handling**: parser and executor correctly detect and apply file deletions
+- **Rename detection**: `rename from`/`rename to` headers are parsed and preserved in patches
+- **File mode changes**: `old mode`/`new mode` detected; synthetic hunks for mode-only changes
+- **File overlap warnings**: validator warns when multiple commits touch the same file
+- **`.intentra/` directory**: all runtime files consolidated under `.intentra/` with per-directory `.gitignore`
+- **Legacy config fallback**: automatic detection and migration notice for old `.engine.yaml`
+- **New config options**: `max_retries`, `timeout`, `max_commits`, `ignore_patterns`, `sign_commits`, `scope_required`, `body_required`
+- **Live spinner**: elapsed-time indicator during LLM calls
+- **Deterministic patch output**: files sorted alphabetically in generated patches
+
+### v0.3.0 -- Streaming & GitHub Integration
+
+- **LLM response streaming**: real-time token-by-token output with live progress, proving the connection is alive and enabling early abort on bad output
+- **Hunk summarization**: send concise summaries instead of full patches during clustering to reduce token usage on large diffs
 - `intentra pr` -- create a feature branch, push, and open a GitHub PR with AI-generated title and description
 - `intentra push` -- push the current branch with smart remote detection
 - Remote branch protection awareness via GitHub API
 - `gh` CLI integration for authentication and API access
 
-### v0.3.0 -- Commit Intelligence
+### v0.4.0 -- Commit Intelligence
 
 - Risk scoring per commit (sensitive areas: auth, database, payments, config)
 - Entanglement detection (warning when a commit touches unrelated subsystems)
 - Confidence score for clustering quality (how sure is the model about the grouping?)
 - `intentra plan --analyze` flag for detailed per-commit breakdown
 
-### v0.4.0 -- PR Intelligence
+### v0.5.0 -- PR Intelligence
 
 - Auto-generate PR descriptions from the structured commit plan
 - Suggest PR splits when a branch has too many unrelated changes
 - Review checklist generation based on what files and subsystems changed
 - `intentra review` command for self-review before submitting
 
-### v0.5.0 -- CI/CD Integration
+### v0.6.0 -- CI/CD Integration
 
 - Official GitHub Actions action (`uses: crvgilbertson/intentra-action`)
 - Run `intentra plan --json` in CI to validate commit hygiene on every PR
 - Block merges if commits don't follow conventions or fail risk thresholds
 - Post plan summary as a PR comment for reviewer context
 
-### v0.6.0 -- Team Configuration
+### v0.7.0 -- Team Configuration
 
 - Shareable config presets for common setups (monorepo, library, microservice)
 - Scope auto-detection from directory structure and module boundaries
-- Team-wide `.intentra.yaml` in repo root with personal overrides
+- Team-wide config in repo root with personal overrides
 - `intentra config check` for config validation and drift detection
 
 ### v1.0.0 -- Stable Platform
 
 - Stability promise: CLI flags, config format, and JSON output schema will not break
 - Plugin interface for custom planners and validators
-- Streaming output and parallel hunk analysis for large diffs
+- Parallel hunk analysis for large diffs
 - `intentra upgrade` for self-updating to latest release
 - Comprehensive documentation site
 
