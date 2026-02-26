@@ -36,3 +36,4 @@ Thumbs.db
 
 # Temp files from executor patches
 intentra-patch-*.patch
+*.zip
