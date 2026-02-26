@@ -31,6 +31,7 @@ func ValidateCommitPlan(plan models.CommitPlan, ec enginectx.EngineContext) erro
 	validateCommitTypes(plan, ve)
 	validateScopes(plan, ec, ve)
 	validateSubjects(plan, ec, ve)
+	validateBody(plan, ec, ve)
 	validateBreaking(plan, ve)
 
 	if len(ve.Errors) > 0 {
@@ -79,6 +80,14 @@ func validateCommitTypes(plan models.CommitPlan, ve *ValidationError) {
 }
 
 func validateScopes(plan models.CommitPlan, ec enginectx.EngineContext, ve *ValidationError) {
+	if ec.Config.Style.ScopeRequired {
+		for _, c := range plan.Commits {
+			if c.Scope == nil || *c.Scope == "" {
+				ve.add(fmt.Sprintf("commit %s missing required scope", c.ID))
+			}
+		}
+	}
+
 	if len(ec.Config.Style.Scopes) == 0 {
 		return
 	}
@@ -91,6 +100,17 @@ func validateScopes(plan models.CommitPlan, ec enginectx.EngineContext, ve *Vali
 	for _, c := range plan.Commits {
 		if c.Scope != nil && *c.Scope != "" && !allowed[*c.Scope] {
 			ve.add(fmt.Sprintf("commit %s has disallowed scope %q", c.ID, *c.Scope))
+		}
+	}
+}
+
+func validateBody(plan models.CommitPlan, ec enginectx.EngineContext, ve *ValidationError) {
+	if !ec.Config.Style.BodyRequired {
+		return
+	}
+	for _, c := range plan.Commits {
+		if c.Body == nil || *c.Body == "" {
+			ve.add(fmt.Sprintf("commit %s missing required body", c.ID))
 		}
 	}
 }
@@ -112,6 +132,37 @@ func validateSubjects(plan models.CommitPlan, ec enginectx.EngineContext, ve *Va
 			ve.add(fmt.Sprintf("commit %s subject starts with uppercase", c.ID))
 		}
 	}
+}
+
+// WarnFileOverlap returns warnings for files that appear in multiple commits.
+// These are not hard errors — apply may still succeed — but they signal that
+// shifted line numbers could cause patch failures.
+func WarnFileOverlap(plan models.CommitPlan, hunks []models.Hunk) []string {
+	hunkFiles := make(map[string]string)
+	for _, h := range hunks {
+		hunkFiles[h.HunkID] = h.FilePath
+	}
+
+	fileCommits := make(map[string][]string)
+	for _, c := range plan.Commits {
+		seen := make(map[string]bool)
+		for _, hid := range c.Hunks {
+			if fp, ok := hunkFiles[hid]; ok && !seen[fp] {
+				fileCommits[fp] = append(fileCommits[fp], c.ID)
+				seen[fp] = true
+			}
+		}
+	}
+
+	var warnings []string
+	for file, commits := range fileCommits {
+		if len(commits) > 1 {
+			warnings = append(warnings, fmt.Sprintf(
+				"file %q is modified in %d commits (%s); later commits may fail if hunks shift line numbers",
+				file, len(commits), strings.Join(commits, ", ")))
+		}
+	}
+	return warnings
 }
 
 func validateBreaking(plan models.CommitPlan, ve *ValidationError) {
