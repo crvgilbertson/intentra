@@ -6,4 +6,5 @@ type Hunk struct {
 	Header   string `json:"header"`
 	Patch    string `json:"patch"`
 	Summary  string `json:"summary"`
+	NewFile  bool   `json:"new_file,omitempty"`
 }

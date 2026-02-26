@@ -3,7 +3,9 @@ package context
 import (
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 
 	"intentra/config"
@@ -22,15 +24,21 @@ type EngineContext struct {
 // It shells out to git for diff and log; this is the only place in the
 // context package that has side effects.
 func BuildContext(ctx context.Context, cfg config.EngineConfig) (EngineContext, error) {
-	diff, err := gitCommand(ctx, "diff")
+	trackedDiff, err := gitCommand(ctx, "diff")
 	if err != nil {
 		return EngineContext{}, fmt.Errorf("collecting git diff: %w", err)
 	}
 
-	hunks := ParseDiff(diff)
+	untrackedDiff, err := collectUntrackedDiff(ctx)
+	if err != nil {
+		return EngineContext{}, fmt.Errorf("collecting untracked files: %w", err)
+	}
 
-	if cfg.AI.MaxDiffKB > 0 && len(diff)/1024 > cfg.AI.MaxDiffKB {
-		return EngineContext{}, fmt.Errorf("diff size %d KB exceeds max_diff_kb (%d KB)", len(diff)/1024, cfg.AI.MaxDiffKB)
+	fullDiff := trackedDiff + untrackedDiff
+	hunks := ParseDiff(fullDiff)
+
+	if cfg.AI.MaxDiffKB > 0 && len(fullDiff)/1024 > cfg.AI.MaxDiffKB {
+		return EngineContext{}, fmt.Errorf("diff size %d KB exceeds max_diff_kb (%d KB)", len(fullDiff)/1024, cfg.AI.MaxDiffKB)
 	}
 
 	logOut, err := gitCommand(ctx, "log", "--oneline", "-n", "10")
@@ -58,6 +66,58 @@ func BuildContext(ctx context.Context, cfg config.EngineConfig) (EngineContext, 
 		RecentCommits: commits,
 		Config:        cfg,
 	}, nil
+}
+
+// collectUntrackedDiff finds untracked files (respecting .gitignore) and
+// generates unified diff output for each, treating them as new file additions.
+func collectUntrackedDiff(ctx context.Context) (string, error) {
+	out, err := gitCommand(ctx, "ls-files", "--others", "--exclude-standard")
+	if err != nil {
+		return "", nil
+	}
+
+	var sb strings.Builder
+	for _, file := range strings.Split(strings.TrimSpace(out), "\n") {
+		file = strings.TrimSpace(file)
+		if file == "" {
+			continue
+		}
+
+		if isBinaryFile(file) {
+			continue
+		}
+
+		content, err := os.ReadFile(file)
+		if err != nil {
+			continue
+		}
+
+		lines := strings.Split(string(content), "\n")
+		fmt.Fprintf(&sb, "diff --git a/%s b/%s\n", file, file)
+		fmt.Fprintf(&sb, "new file mode 100644\n")
+		fmt.Fprintf(&sb, "--- /dev/null\n")
+		fmt.Fprintf(&sb, "+++ b/%s\n", file)
+		fmt.Fprintf(&sb, "@@ -0,0 +1,%d @@\n", len(lines))
+		for _, line := range lines {
+			fmt.Fprintf(&sb, "+%s\n", line)
+		}
+	}
+
+	return sb.String(), nil
+}
+
+func isBinaryFile(path string) bool {
+	ext := strings.ToLower(filepath.Ext(path))
+	binaryExts := map[string]bool{
+		".exe": true, ".dll": true, ".so": true, ".dylib": true,
+		".bin": true, ".o": true, ".a": true, ".lib": true,
+		".png": true, ".jpg": true, ".jpeg": true, ".gif": true,
+		".ico": true, ".webp": true, ".bmp": true, ".tiff": true,
+		".zip": true, ".tar": true, ".gz": true, ".bz2": true,
+		".7z": true, ".rar": true, ".xz": true,
+		".pdf": true, ".wasm": true, ".pyc": true,
+	}
+	return binaryExts[ext]
 }
 
 func gitCommand(ctx context.Context, args ...string) (string, error) {
