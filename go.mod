@@ -1,4 +1,4 @@
-module intentra
+module github.com/crvgilbertson/intentra
 
 go 1.24.2
 
