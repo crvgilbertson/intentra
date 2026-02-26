@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	enginectx "github.com/crvgilbertson/intentra/engine/context"
 	"github.com/crvgilbertson/intentra/engine/models"
@@ -24,7 +25,8 @@ Rules:
 - Do not over-split: if changes are tightly coupled, keep them in one group.
 - Use stable group IDs: g1, g2, g3, etc.
 - Every hunk_id provided must be assigned to exactly one group. Do not omit any.
-- Order groups by dependency: foundational changes (models, types, interfaces) first, then logic that depends on them, then CLI/entrypoint last. A later group may depend on an earlier group, but never the reverse.`
+- Order groups by dependency: foundational changes (models, types, interfaces) first, then logic that depends on them, then CLI/entrypoint last. A later group may depend on an earlier group, but never the reverse.
+- Create at most %d groups. If changes are numerous, group less critical changes together rather than exceeding the limit.`
 
 const messagingSystemPrompt = `You are a commit message generator following the Conventional Commits specification.
 
@@ -55,6 +57,12 @@ func (p *CommitPlanner) BuildPlan(ctx context.Context, ec enginectx.EngineContex
 		return nil, fmt.Errorf("no hunks to plan")
 	}
 
+	if ec.Config.AI.Timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, time.Duration(ec.Config.AI.Timeout)*time.Second)
+		defer cancel()
+	}
+
 	sortHunks(ec.Hunks)
 
 	clustering, err := p.clusterHunks(ctx, ec)
@@ -75,15 +83,28 @@ func (p *CommitPlanner) BuildPlan(ctx context.Context, ec enginectx.EngineContex
 func (p *CommitPlanner) clusterHunks(ctx context.Context, ec enginectx.EngineContext) (ClusteringResponse, error) {
 	input := buildClusteringInput(ec.Hunks)
 
+	maxCommits := ec.Config.Engine.MaxCommits
+	if maxCommits <= 0 {
+		maxCommits = 10
+	}
+	sysPrompt := fmt.Sprintf(clusteringSystemPrompt, maxCommits)
+
 	validateClustering := func(cr ClusteringResponse) error {
-		return validateClusteringResponse(cr, ec.Hunks)
+		if err := validateClusteringResponse(cr, ec.Hunks); err != nil {
+			return err
+		}
+		if len(cr.Groups) > maxCommits {
+			return fmt.Errorf("produced %d groups, max allowed is %d", len(cr.Groups), maxCommits)
+		}
+		return nil
 	}
 
 	return reasoning.CallWithRetry[ClusteringResponse](
 		ctx, p.engine,
 		"clustering", ClusteringSchema,
-		clusteringSystemPrompt, input,
+		sysPrompt, input,
 		validateClustering,
+		ec.Config.AI.MaxRetries,
 	)
 }
 
@@ -101,6 +122,7 @@ func (p *CommitPlanner) generateMessages(ctx context.Context, ec enginectx.Engin
 		"messaging", MessagingSchema,
 		sysPrompt, input,
 		validateMessaging,
+		ec.Config.AI.MaxRetries,
 	)
 }
 
@@ -263,8 +285,6 @@ func sortHunks(hunks []models.Hunk) {
 
 // reorderCommitsByDependency sorts commits so that foundational packages
 // (models, types, interfaces) come before higher-level consumers (cmd, main).
-// Each commit gets a priority score based on the minimum package layer of
-// its hunks. Lower scores are applied first.
 func reorderCommitsByDependency(plan *models.CommitPlan, hunks []models.Hunk) {
 	hunkDir := make(map[string]string, len(hunks))
 	for _, h := range hunks {
@@ -291,8 +311,6 @@ func reorderCommitsByDependency(plan *models.CommitPlan, hunks []models.Hunk) {
 	}
 }
 
-// packageLayer assigns a numeric layer to a directory path. Lower layers
-// are more foundational and should be committed first.
 func packageLayer(dir string) int {
 	dir = strings.ToLower(dir)
 
