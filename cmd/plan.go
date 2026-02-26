@@ -24,7 +24,7 @@ var jsonOutput bool
 var planCmd = &cobra.Command{
 	Use:   "plan",
 	Short: "Generate a commit plan from uncommitted changes",
-	Long:  "Analyzes the current git diff and produces a structured commit plan using AI reasoning. The plan is saved to .intentra-plan.json for use by apply.",
+	Long:  "Analyzes the current git diff and produces a structured commit plan using AI reasoning. The plan is saved to .intentra/plan.json for use by apply.",
 	RunE:  runPlan,
 }
 
@@ -56,6 +56,7 @@ func runPlan(cmd *cobra.Command, args []string) error {
 	spin := ui.NewSpinner("Generating commit plan...")
 	planner.OnProgress = func(stage string) { spin.UpdateMessage(stage) }
 	spin.Start()
+	defer spin.Stop()
 	plan, err := planner.BuildPlan(ctx, ec)
 	spin.Stop()
 	if err != nil {
@@ -87,6 +88,7 @@ func runPlan(cmd *cobra.Command, args []string) error {
 	}
 
 	printPlanSummary(cp, ec.Hunks)
+	printConfidence(cp, ec.Hunks)
 	return nil
 }
 
@@ -154,5 +156,13 @@ func loadCachedPlan() (*models.CommitPlan, error) {
 	if err := json.Unmarshal(data, &cp); err != nil {
 		return nil, fmt.Errorf("parsing cached plan: %w", err)
 	}
+	if err := cp.Validate(); err != nil {
+		return nil, fmt.Errorf("cached plan is structurally invalid: %w", err)
+	}
 	return &cp, nil
+}
+
+func printConfidence(cp *models.CommitPlan, hunks []models.Hunk) {
+	pc := validators.AssessPlanConfidence(*cp, hunks)
+	ui.PrintConfidence(pc.Level, pc.Score, pc.Warnings)
 }

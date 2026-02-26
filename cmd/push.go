@@ -41,6 +41,8 @@ func runPush(cmd *cobra.Command, args []string) error {
 
 	ui.Info("Branch: %s  Remote: %s\n", branch, remote)
 
-	smartPush(remote, branch)
+	if !smartPush(remote, branch) {
+		return fmt.Errorf("push to %s failed", remote)
+	}
 	return nil
 }
