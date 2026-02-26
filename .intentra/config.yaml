@@ -19,6 +19,7 @@ ai:
     max_diff_kb: 500
     max_retries: 1
     timeout: 120
+    max_hunk_lines: 50
 engine:
     strict_mode: true
     protected_branches:

@@ -330,6 +330,7 @@ ai:
     max_diff_kb: 500
     max_retries: 1
     timeout: 120
+    max_hunk_lines: 50
 
 engine:
     strict_mode: true
@@ -362,6 +363,7 @@ engine:
 | `ai` | `base_url` | string | *(empty)* | Custom API base URL (for Azure, proxies, or self-hosted endpoints) |
 | `ai` | `max_retries` | int | `1` | Number of LLM retry attempts on validation failure |
 | `ai` | `timeout` | int | `120` | Timeout in seconds for the entire planning phase |
+| `ai` | `max_hunk_lines` | int | `50` | Truncate patches longer than this in the clustering prompt (0 = no truncation). Reduces token usage on large diffs. |
 | `engine` | `strict_mode` | bool | `true` | Enable strict validation |
 | `engine` | `protected_branches` | []string | `[main, master]` | Branches that `apply --yes` refuses to commit to |
 | `engine` | `max_commits` | int | `20` | Maximum number of commits per plan |
