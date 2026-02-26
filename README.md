@@ -13,6 +13,8 @@ A deterministic, AI-powered code change reasoning engine. Intentra analyzes your
 - [Commands](#commands)
   - [plan](#intentra-plan)
   - [apply](#intentra-apply)
+  - [push](#intentra-push)
+  - [pr](#intentra-pr)
   - [init](#intentra-init)
 - [Configuration](#configuration)
 - [Architecture](#architecture)
@@ -32,7 +34,7 @@ A deterministic, AI-powered code change reasoning engine. Intentra analyzes your
 
 1. **Context** -- Intentra runs `git diff HEAD` on your working tree and parses the output into individual hunks, capturing both staged and unstaged changes. Each hunk receives a stable, deterministic ID via `sha256(filePath + header + patch)`. Untracked files are detected separately and included as synthetic diffs. Files matching `ignore_patterns` in your config are excluded.
 
-2. **Clustering** -- The hunks are sent to an LLM with strict JSON schema enforcement. The model groups related hunks by intent: which changes belong together in a single atomic commit. Supports OpenAI, Anthropic Claude, and any OpenAI-compatible endpoint (Ollama, vLLM, LM Studio). A live spinner shows elapsed time during LLM calls. If the model drops any hunks, a targeted rescue call recovers them (see [Orphan Hunk Recovery](#two-pass-planning-pipeline)).
+2. **Clustering** -- The hunks are sent to an LLM with strict JSON schema enforcement. The model groups related hunks by intent: which changes belong together in a single atomic commit. Supports OpenAI, Anthropic Claude, and any OpenAI-compatible endpoint (Ollama, vLLM, LM Studio). Large patches are automatically summarized (first/last N lines) to reduce token usage -- configurable via `max_hunk_lines`. A phased progress indicator shows the current stage ("Clustering N hunks...", "Generating commit messages...") with elapsed time. If the model drops any hunks, a targeted rescue call recovers them (see [Orphan Hunk Recovery](#two-pass-planning-pipeline)).
 
 3. **Messaging** -- For each cluster, the LLM generates Conventional Commit metadata: type, scope, subject, body, breaking change flags, and footers. All output is schema-validated. Both passes support configurable retries with correction prompts.
 
@@ -50,6 +52,7 @@ A deterministic, AI-powered code change reasoning engine. Intentra analyzes your
 
 - **Go 1.22+**
 - **Git** installed and available on `PATH`
+- **`gh` CLI** (optional) -- required for `intentra pr` and remote branch protection checks. Install: https://cli.github.com
 - An API key for your chosen provider (Intentra validates this before making any LLM calls and will tell you exactly which variable is missing):
 
   | Provider | Environment Variable | Example |
@@ -97,6 +100,12 @@ intentra apply
 
 # 6. Actually apply the commits
 intentra apply --yes
+
+# 7. Push the branch (auto-detects upstream)
+intentra push
+
+# 8. Open a PR (title/body derived from the commit plan)
+intentra pr
 ```
 
 ---
@@ -273,6 +282,49 @@ After a successful apply, the cache file is automatically deleted.
 6. For each commit: writes a patch file, stages with `git apply --cached`, then `git commit` (optionally with `-S` for GPG signing, `--no-verify` if `skip_hooks`, `--author` if `commit_author` is set)
 7. If any step fails: rolls back all commits and restores the index to the snapshot
 8. On success: deletes the cached plan. If `auto_push` is enabled, pushes to the configured remote (validates the remote exists first, handles `--set-upstream` for new branches)
+
+### `intentra push`
+
+Pushes the current branch to the configured remote, automatically setting the upstream if needed. Checks for remote branch protection via the GitHub API before pushing (requires `gh` CLI).
+
+```
+Usage:
+  intentra push [flags]
+
+Flags:
+      --remote string   Override remote name (default: config remote_name)
+```
+
+**Behavior:**
+
+1. Detect the current branch
+2. Validate the remote exists
+3. If `gh` is available, check GitHub branch protection and warn if PRs are required
+4. If the branch has an upstream: `git push`
+5. If no upstream: `git push --set-upstream <remote> <branch>`
+
+### `intentra pr`
+
+Creates a GitHub pull request from the current branch. Pushes the branch first, then generates a PR with title and body derived from the cached commit plan. Requires the `gh` CLI to be installed and authenticated.
+
+```
+Usage:
+  intentra pr [flags]
+
+Flags:
+      --title string   PR title (auto-generated if omitted)
+      --base string    Base branch (default: first protected branch from config, or main)
+      --draft          Create as draft PR
+```
+
+**PR content generation:**
+
+- **Single commit**: PR title is the commit's full subject (`type(scope): subject`)
+- **Multiple commits**: title is `N changes: feat(scope), fix(scope), ...`
+- **Body**: lists each commit with its type, scope, subject, and hunk count
+- **Fallback**: if no cached plan exists, uses `git log --oneline` from the branch
+
+No LLM call is needed -- the structured commit plan already contains everything.
 
 ### `intentra init`
 
@@ -562,9 +614,13 @@ intentra/
 │   ├── root.go                      Root command, --config flag, legacy config fallback
 │   ├── plan.go                      intentra plan [--json], plan caching
 │   ├── apply.go                     intentra apply [--yes], cache-aware plan resolution
+│   ├── push.go                      intentra push [--remote], smart upstream detection
+│   ├── pr.go                        intentra pr [--title, --base, --draft], plan-derived PR
+│   ├── gh.go                        gh CLI helpers (available, authenticated, repo info, protection)
+│   ├── githelpers.go                Shared git operations (push, branch, remote, preflight)
 │   ├── init.go                      intentra init (creates .intentra/ directory)
 │   └── ui/
-│       └── styles.go                Colored output, spinner, plan summary (fatih/color)
+│       └── styles.go                Colored output, phased spinner, plan summary (fatih/color)
 │
 ├── config/                          Configuration loading and defaults
 │   └── config.go                    EngineConfig, YAML load/write, directory helpers
@@ -638,9 +694,10 @@ The test suite includes:
 | Package | Tests | Coverage |
 |---------|-------|----------|
 | `engine/context` | 12 | Diff parsing (single file, multi-file, binary skip, renames, deleted files, mode-only changes, mode+content changes, empty), hunk hashing (stability, uniqueness, format) |
-| `engine/planners` | 9 | Full planner flow with mocked LLM, empty hunks, clustering validation (missing/duplicate/unknown hunks), messaging validation (missing groups), commit dependency reordering, package layer scoring |
+| `engine/planners` | 12 | Full planner flow with mocked LLM, empty hunks, clustering validation (missing/duplicate/unknown hunks), messaging validation (missing groups), commit dependency reordering, package layer scoring, hunk summarization (no-op, disabled, truncated) |
 | `engine/validators` | 13 | Valid plan, missing hunk, duplicate hunk, unknown hunk, bad type, bad scope, subject too long, trailing period, uppercase subject, breaking without footer, breaking with footer, empty scopes, multiple errors |
 | `engine/executors` | 8 | Apply single commit, dry-run, fail-and-restore, partial apply rollback, deleted file commit, staged changes included, commit author override, skip hooks bypass |
+| `cmd` | 3 | PR title/body generation from commit plan (single commit, multiple commits, type summarization) |
 
 All LLM calls are mocked in tests -- no network access required.
 
