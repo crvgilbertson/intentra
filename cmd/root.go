@@ -6,6 +6,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/crvgilbertson/intentra/config"
+	"github.com/crvgilbertson/intentra/internal"
 )
 
 var (
@@ -14,10 +15,14 @@ var (
 )
 
 var rootCmd = &cobra.Command{
-	Use:   "intentra",
-	Short: "AI-powered code change reasoning engine",
-	Long:  "Intentra is a deterministic, extensible workflow engine that understands code changes and produces structured, machine-actionable plans.",
+	Use:     "intentra",
+	Short:   "AI-powered code change reasoning engine",
+	Long:    "Intentra is a deterministic, extensible workflow engine that understands code changes and produces structured, machine-actionable plans.",
+	Version: internal.Version,
 	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
+		if cmd.Name() == "version" {
+			return nil
+		}
 		var err error
 		cfg, err = config.Load(cfgPath)
 		if err != nil {
