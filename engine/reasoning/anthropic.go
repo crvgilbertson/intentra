@@ -110,8 +110,26 @@ func convertToToolInputSchema(schema interface{}) anthropic.ToolInputSchemaParam
 		properties = p
 	}
 
+	var required []string
+	if r, ok := raw["required"]; ok {
+		if rs, ok := r.([]interface{}); ok {
+			for _, v := range rs {
+				if s, ok := v.(string); ok {
+					required = append(required, s)
+				}
+			}
+		}
+	}
+
+	extra := make(map[string]interface{})
+	if ap, ok := raw["additionalProperties"]; ok {
+		extra["additionalProperties"] = ap
+	}
+
 	return anthropic.ToolInputSchemaParam{
-		Properties: properties,
+		Properties:  properties,
+		Required:    required,
+		ExtraFields: extra,
 	}
 }
 
