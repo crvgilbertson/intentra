@@ -50,11 +50,16 @@ A deterministic, AI-powered code change reasoning engine. Intentra analyzes your
 
 - **Go 1.22+**
 - **Git** installed and available on `PATH`
-- An API key for your chosen provider:
-  - **OpenAI**: set `OPENAI_API_KEY`
-  - **Anthropic**: set `ANTHROPIC_API_KEY`
-  - **Gemini**: set `GEMINI_API_KEY`
-  - **Ollama**: no key needed (runs locally)
+- An API key for your chosen provider (Intentra validates this before making any LLM calls and will tell you exactly which variable is missing):
+
+  | Provider | Environment Variable | Example |
+  |----------|---------------------|---------|
+  | OpenAI (default) | `OPENAI_API_KEY` | `export OPENAI_API_KEY=sk-...` |
+  | Anthropic | `ANTHROPIC_API_KEY` | `export ANTHROPIC_API_KEY=sk-ant-...` |
+  | Gemini | `GEMINI_API_KEY` | `export GEMINI_API_KEY=AI...` |
+  | Ollama | (none) | Runs locally -- no key needed |
+
+  API keys are read from environment variables only -- they are never stored in config files, so there is no risk of committing secrets.
 
 ---
 
