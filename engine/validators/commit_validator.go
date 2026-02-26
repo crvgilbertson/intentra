@@ -125,7 +125,7 @@ func validateSubjects(plan models.CommitPlan, ec enginectx.EngineContext, ve *Va
 		if maxLen > 0 && len(c.Subject) > maxLen {
 			ve.add(fmt.Sprintf("commit %s subject exceeds %d chars (%d)", c.ID, maxLen, len(c.Subject)))
 		}
-		if strings.HasSuffix(c.Subject, ".") {
+		if strings.HasSuffix(c.Subject, ".") && !strings.HasSuffix(c.Subject, "...") {
 			ve.add(fmt.Sprintf("commit %s subject has trailing period", c.ID))
 		}
 		if len(c.Subject) > 0 && unicode.IsUpper(rune(c.Subject[0])) {
