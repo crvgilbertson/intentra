@@ -113,7 +113,10 @@ func resolveCommitPlan(ctx context.Context, ec *enginectx.EngineContext) (*model
 	}
 	planner := planners.NewCommitPlanner(engine)
 
+	spin := ui.NewSpinner("Generating commit plan...")
+	spin.Start()
 	plan, err := planner.BuildPlan(ctx, *ec)
+	spin.Stop()
 	if err != nil {
 		return nil, fmt.Errorf("building plan: %w", err)
 	}

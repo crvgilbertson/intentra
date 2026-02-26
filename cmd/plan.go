@@ -47,15 +47,16 @@ func runPlan(cmd *cobra.Command, args []string) error {
 	}
 
 	ui.Info("Found %d hunk(s) across the diff.\n", len(ec.Hunks))
-	ui.Info("Generating commit plan...\n")
-
 	engine, err := reasoning.NewEngineFromConfig(cfg.AI)
 	if err != nil {
 		return fmt.Errorf("creating reasoning engine: %w", err)
 	}
 	planner := planners.NewCommitPlanner(engine)
 
+	spin := ui.NewSpinner("Generating commit plan...")
+	spin.Start()
 	plan, err := planner.BuildPlan(ctx, ec)
+	spin.Stop()
 	if err != nil {
 		return fmt.Errorf("building plan: %w", err)
 	}
