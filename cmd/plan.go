@@ -14,14 +14,17 @@ import (
 	"intentra/engine/reasoning"
 	"intentra/engine/validators"
 
+	"intentra/cmd/ui"
 )
+
+const defaultPlanFile = ".intentra-plan.json"
 
 var jsonOutput bool
 
 var planCmd = &cobra.Command{
 	Use:   "plan",
 	Short: "Generate a commit plan from uncommitted changes",
-	Long:  "Analyzes the current git diff and produces a structured commit plan using AI reasoning.",
+	Long:  "Analyzes the current git diff and produces a structured commit plan using AI reasoning. The plan is saved to .intentra-plan.json for use by apply.",
 	RunE:  runPlan,
 }
 
@@ -39,12 +42,12 @@ func runPlan(cmd *cobra.Command, args []string) error {
 	}
 
 	if len(ec.Hunks) == 0 {
-		fmt.Println("No uncommitted changes found.")
+		ui.Warn("No uncommitted changes found.\n")
 		return nil
 	}
 
-	fmt.Fprintf(os.Stderr, "Found %d hunk(s) across the diff.\n", len(ec.Hunks))
-	fmt.Fprintf(os.Stderr, "Generating commit plan...\n")
+	ui.Info("Found %d hunk(s) across the diff.\n", len(ec.Hunks))
+	ui.Info("Generating commit plan...\n")
 
 	engine, err := reasoning.NewEngineFromConfig(cfg.AI)
 	if err != nil {
@@ -66,6 +69,12 @@ func runPlan(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("plan validation failed: %w", err)
 	}
 
+	if err := savePlan(cp); err != nil {
+		ui.Warn("Warning: could not save plan cache: %v\n", err)
+	} else {
+		ui.Dim("Plan saved to %s\n", defaultPlanFile)
+	}
+
 	if jsonOutput {
 		data, err := json.MarshalIndent(cp, "", "  ")
 		if err != nil {
@@ -75,23 +84,70 @@ func runPlan(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
-	printPlanSummary(cp)
+	printPlanSummary(cp, ec.Hunks)
 	return nil
 }
 
-func printPlanSummary(cp *models.CommitPlan) {
-	fmt.Printf("\nCommit Plan (%d commit(s)):\n", len(cp.Commits))
-	fmt.Printf("Base: %s\n\n", cp.BaseRef)
+func printPlanSummary(cp *models.CommitPlan, hunks []models.Hunk) {
+	hunkFileMap := make(map[string]string, len(hunks))
+	for _, h := range hunks {
+		hunkFileMap[h.HunkID] = h.FilePath
+	}
 
-	for i, c := range cp.Commits {
-		fmt.Printf("  %d. %s\n", i+1, c.FullSubject())
-		if c.Body != nil && *c.Body != "" {
-			fmt.Printf("     %s\n", *c.Body)
+	var commits []ui.CommitDisplay
+	for _, c := range cp.Commits {
+		files := uniqueFiles(c.Hunks, hunkFileMap)
+		body := ""
+		if c.Body != nil {
+			body = *c.Body
 		}
-		fmt.Printf("     hunks: %d\n", len(c.Hunks))
-		if c.Breaking {
-			fmt.Printf("     ⚠ BREAKING CHANGE\n")
+		scope := ""
+		if c.Scope != nil {
+			scope = *c.Scope
+		}
+		commits = append(commits, ui.CommitDisplay{
+			Type:      c.Type,
+			Scope:     scope,
+			Subject:   c.Subject,
+			Body:      body,
+			HunkCount: len(c.Hunks),
+			Files:     files,
+			Breaking:  c.Breaking,
+		})
+	}
+
+	ui.PrintPlanSummary(cp.ToolVersion, cp.BaseRef, commits)
+}
+
+func uniqueFiles(hunkIDs []string, hunkFileMap map[string]string) []string {
+	seen := make(map[string]bool)
+	var files []string
+	for _, hid := range hunkIDs {
+		f := hunkFileMap[hid]
+		if f != "" && !seen[f] {
+			seen[f] = true
+			files = append(files, f)
 		}
 	}
-	fmt.Println()
+	return files
+}
+
+func savePlan(cp *models.CommitPlan) error {
+	data, err := json.MarshalIndent(cp, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshalling plan: %w", err)
+	}
+	return os.WriteFile(defaultPlanFile, data, 0644)
+}
+
+func loadCachedPlan() (*models.CommitPlan, error) {
+	data, err := os.ReadFile(defaultPlanFile)
+	if err != nil {
+		return nil, err
+	}
+	var cp models.CommitPlan
+	if err := json.Unmarshal(data, &cp); err != nil {
+		return nil, fmt.Errorf("parsing cached plan: %w", err)
+	}
+	return &cp, nil
 }
