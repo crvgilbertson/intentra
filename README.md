@@ -61,13 +61,13 @@ A deterministic, AI-powered code change reasoning engine. Intentra analyzes your
 ## Installation
 
 ```bash
-go install intentra@latest
+go install github.com/crvgilbertson/intentra@latest
 ```
 
 Or build from source:
 
 ```bash
-git clone <repo-url> && cd intentra
+git clone https://github.com/crvgilbertson/intentra.git && cd intentra
 go build -o intentra .
 ```
 
@@ -692,4 +692,4 @@ Intentra is designed as an extensible platform. The `Planner` interface is gener
 
 ## License
 
-TBD
+Apache License 2.0 — see [LICENSE](LICENSE) for details.
