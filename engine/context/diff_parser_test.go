@@ -38,6 +38,34 @@ index 3333333..4444444 100644
  }
 `
 
+const deletedFileDiff = `diff --git a/removed.go b/removed.go
+deleted file mode 100644
+--- a/removed.go
++++ /dev/null
+@@ -1,5 +0,0 @@
+-package removed
+-
+-func Gone() {
+-	return
+-}
+`
+
+const modeChangeDiff = `diff --git a/script.sh b/script.sh
+old mode 100644
+new mode 100755
+`
+
+const modeAndContentDiff = `diff --git a/script.sh b/script.sh
+old mode 100644
+new mode 100755
+--- a/script.sh
++++ b/script.sh
+@@ -1,3 +1,4 @@
+ #!/bin/bash
++set -e
+ echo "hello"
+`
+
 const binaryDiff = `diff --git a/image.png b/image.png
 Binary files /dev/null and b/image.png differ
 `
@@ -100,6 +128,54 @@ func TestParseDiff_Rename(t *testing.T) {
 	}
 	if hunks[0].FilePath != "new.go" {
 		t.Errorf("expected new.go, got %s", hunks[0].FilePath)
+	}
+	if hunks[0].RenamedFrom != "old.go" {
+		t.Errorf("expected renamed_from=old.go, got %q", hunks[0].RenamedFrom)
+	}
+}
+
+func TestParseDiff_DeletedFile(t *testing.T) {
+	hunks := ParseDiff(deletedFileDiff)
+	if len(hunks) != 1 {
+		t.Fatalf("expected 1 hunk, got %d", len(hunks))
+	}
+	if hunks[0].FilePath != "removed.go" {
+		t.Errorf("expected removed.go, got %s", hunks[0].FilePath)
+	}
+	if !hunks[0].DeletedFile {
+		t.Error("expected DeletedFile=true")
+	}
+}
+
+func TestParseDiff_ModeOnlyChange(t *testing.T) {
+	hunks := ParseDiff(modeChangeDiff)
+	if len(hunks) != 1 {
+		t.Fatalf("expected 1 synthetic hunk for mode change, got %d", len(hunks))
+	}
+	if hunks[0].OldMode != "100644" {
+		t.Errorf("expected old_mode=100644, got %q", hunks[0].OldMode)
+	}
+	if hunks[0].NewMode != "100755" {
+		t.Errorf("expected new_mode=100755, got %q", hunks[0].NewMode)
+	}
+	if hunks[0].Header != "" {
+		t.Errorf("expected empty header for mode-only hunk, got %q", hunks[0].Header)
+	}
+}
+
+func TestParseDiff_ModeAndContentChange(t *testing.T) {
+	hunks := ParseDiff(modeAndContentDiff)
+	if len(hunks) != 1 {
+		t.Fatalf("expected 1 hunk, got %d", len(hunks))
+	}
+	if hunks[0].OldMode != "100644" {
+		t.Errorf("expected old_mode=100644, got %q", hunks[0].OldMode)
+	}
+	if hunks[0].NewMode != "100755" {
+		t.Errorf("expected new_mode=100755, got %q", hunks[0].NewMode)
+	}
+	if hunks[0].Header == "" {
+		t.Error("expected non-empty header for content hunk")
 	}
 }
 
