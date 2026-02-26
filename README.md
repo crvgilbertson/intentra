@@ -329,51 +329,53 @@ Flags:
 
 **Plan caching behavior:**
 
-- If `.intentra-plan.json` exists and the diff fingerprint matches: `Using cached plan (diff unchanged).`
+- If `.intentra/plan.json` exists and the diff fingerprint matches: `Using cached plan (diff unchanged).`
 - If the file exists but the diff has changed: `Cached plan is stale (diff changed). Re-planning...`
-- If no cached plan exists: `No cached plan found. Generating commit plan...`
+- If no cached plan exists: `No cached plan found.`
 
 After a successful apply, the cache file is automatically deleted.
 
-**Without `--yes`**, the command shows the plan and exits:
-
-```
-Using cached plan from .intentra-plan.json (diff unchanged).
-━━━ Commit Plan (2 commit(s))
-...
-━━━
-Dry-run mode. Pass --yes to apply.
-```
-
 **With `--yes`**, Intentra:
 
-1. Snapshots the current git index state
-2. For each commit: writes a patch file, stages with `git apply --cached`, then `git commit`
-3. If any step fails: immediately aborts and restores the index to the snapshot
-4. On success: deletes the cached plan and reports which commits were created
+1. Checks if the current branch is protected (configurable via `protected_branches`)
+2. Snapshots the current HEAD and index state
+3. Resets the index to HEAD for clean patch application
+4. For each commit: writes a patch file, stages with `git apply --cached`, then `git commit` (optionally with `-S` for GPG signing)
+5. If any step fails: rolls back all commits and restores the index to the snapshot
+6. On success: deletes the cached plan and reports which commits were created
 
 ### `intentra init`
 
-Creates a default `.engine.yaml` configuration file in the current directory.
+Creates the `.intentra/` directory with a default `config.yaml` and a `.gitignore` that ignores ephemeral files.
 
 ```
 Usage:
   intentra init
 ```
 
-Fails if `.engine.yaml` already exists (to prevent accidental overwrites).
+Output:
+```
+Created .intentra/ with default configuration.
+  .intentra/config.yaml  — project config (commit to repo)
+  .intentra/.gitignore — ignores ephemeral files
+```
+
+The config file is meant to be committed to your repo so team members share the same settings. The plan cache is automatically gitignored.
 
 ### Global Flags
 
 ```
-      --config string   Path to config file (default ".engine.yaml")
+      --config string   Path to config file (default ".intentra/config.yaml")
+      --version         Print version
 ```
+
+If `.intentra/config.yaml` is not found, Intentra checks for a legacy `.engine.yaml` and prints a migration notice.
 
 ---
 
 ## Configuration
 
-Intentra is configured via `.engine.yaml` in your project root. Run `intentra init` to generate the default:
+Intentra is configured via `.intentra/config.yaml` in your project root. Run `intentra init` to generate the default:
 
 ```yaml
 style:
