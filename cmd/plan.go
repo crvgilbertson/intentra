@@ -47,6 +47,9 @@ func runPlan(cmd *cobra.Command, args []string) error {
 	}
 
 	ui.Info("Found %d hunk(s) across the diff.\n", len(ec.Hunks))
+	ui.Verbose("Provider: %s, Model: %s, Temperature: %.1f\n", cfg.AI.Provider, cfg.AI.Model, cfg.AI.Temperature)
+	ui.Verbose("Max commits: %d, Batch threshold: %d, Max hunk lines: %d\n", cfg.Engine.MaxCommits, cfg.Engine.BatchThreshold, cfg.AI.MaxHunkLines)
+
 	engine, err := reasoning.NewEngineFromConfig(cfg.AI)
 	if err != nil {
 		return fmt.Errorf("creating reasoning engine: %w", err)
@@ -54,7 +57,10 @@ func runPlan(cmd *cobra.Command, args []string) error {
 	planner := planners.NewCommitPlanner(engine)
 
 	spin := ui.NewSpinner("Generating commit plan...")
-	planner.OnProgress = func(stage string) { spin.UpdateMessage(stage) }
+	planner.OnProgress = func(stage string) {
+		spin.UpdateMessage(stage)
+		ui.Verbose("%s\n", stage)
+	}
 	spin.Start()
 	defer spin.Stop()
 	plan, err := planner.BuildPlan(ctx, ec)
@@ -155,6 +161,10 @@ func loadCachedPlan() (*models.CommitPlan, error) {
 	var cp models.CommitPlan
 	if err := json.Unmarshal(data, &cp); err != nil {
 		return nil, fmt.Errorf("parsing cached plan: %w", err)
+	}
+	if cp.SchemaVersion != "" && cp.SchemaVersion != models.CurrentSchemaVersion {
+		return nil, fmt.Errorf("cached plan has schema %s (current: %s) — re-run 'intentra plan' to regenerate",
+			cp.SchemaVersion, models.CurrentSchemaVersion)
 	}
 	if err := cp.Validate(); err != nil {
 		return nil, fmt.Errorf("cached plan is structurally invalid: %w", err)

@@ -20,7 +20,10 @@ import (
 	"github.com/crvgilbertson/intentra/cmd/ui"
 )
 
-var yesFlag bool
+var (
+	yesFlag   bool
+	forceFlag bool
+)
 
 var applyCmd = &cobra.Command{
 	Use:   "apply",
@@ -31,6 +34,7 @@ var applyCmd = &cobra.Command{
 
 func init() {
 	applyCmd.Flags().BoolVar(&yesFlag, "yes", false, "actually apply commits (default is dry-run)")
+	applyCmd.Flags().BoolVar(&forceFlag, "force", false, "apply even when plan confidence is low")
 	rootCmd.AddCommand(applyCmd)
 }
 
@@ -59,6 +63,7 @@ func runApply(cmd *cobra.Command, args []string) error {
 	}
 
 	ui.Info("Found %d hunk(s) across the diff.\n", len(ec.Hunks))
+	ui.Verbose("Provider: %s, Model: %s, Dry-run: %v\n", cfg.AI.Provider, cfg.AI.Model, dryRun)
 
 	if !dryRun && !cfg.Engine.SkipHooks {
 		warnIfHooksDetected()
@@ -74,11 +79,20 @@ func runApply(cmd *cobra.Command, args []string) error {
 	}
 
 	printPlanSummary(cp, ec.Hunks)
-	printConfidence(cp, ec.Hunks)
+
+	pc := validators.AssessPlanConfidence(*cp, ec.Hunks)
+	ui.PrintConfidence(pc.Level, pc.Score, pc.Warnings)
 
 	if dryRun {
 		ui.Warn("Dry-run mode. Pass --yes to apply.\n")
 		return nil
+	}
+
+	if pc.Level == "low" && !forceFlag {
+		ui.Error("\nPlan confidence is low — refusing to apply.\n")
+		ui.Info("Review the warnings above. To apply anyway, pass --force:\n")
+		ui.Dim("  intentra apply --yes --force\n")
+		return fmt.Errorf("plan confidence too low (%.0f%%); use --force to override", pc.Score*100)
 	}
 
 	ui.Info("Applying %d commit(s)...\n", len(cp.Commits))
@@ -149,7 +163,10 @@ func resolveCommitPlan(ctx context.Context, ec *enginectx.EngineContext) (*model
 	planner := planners.NewCommitPlanner(engine)
 
 	spin := ui.NewSpinner("Generating commit plan...")
-	planner.OnProgress = func(stage string) { spin.UpdateMessage(stage) }
+	planner.OnProgress = func(stage string) {
+		spin.UpdateMessage(stage)
+		ui.Verbose("%s\n", stage)
+	}
 	spin.Start()
 	defer spin.Stop()
 	plan, err := planner.BuildPlan(ctx, *ec)
