@@ -41,12 +41,15 @@ func (c CommitUnit) FullSubject() string {
 	return prefix + ": " + c.Subject
 }
 
+const CurrentSchemaVersion = "v1"
+
 type CommitPlan struct {
-	ToolVersion    string       `json:"tool_version"`
-	BaseRef        string       `json:"base_ref"`
-	DiffFingerprint string     `json:"diff_fingerprint"`
-	Style          CommitStyle  `json:"style"`
-	Commits        []CommitUnit `json:"commits"`
+	SchemaVersion   string       `json:"schema_version"`
+	ToolVersion     string       `json:"tool_version"`
+	BaseRef         string       `json:"base_ref"`
+	DiffFingerprint string       `json:"diff_fingerprint"`
+	Style           CommitStyle  `json:"style"`
+	Commits         []CommitUnit `json:"commits"`
 }
 
 // DiffFingerprintFromHunks produces a stable hash of all hunk IDs. If the
