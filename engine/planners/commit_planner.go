@@ -2,6 +2,7 @@ package planners
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"path/filepath"
@@ -32,6 +33,7 @@ Rules:
 - Every hunk_id provided must be assigned to exactly one group. Do not omit any.
 - Order groups by dependency: foundational changes (models, types, interfaces) first, then logic that depends on them, then CLI/entrypoint last. A later group may depend on an earlier group, but never the reverse.
 - Create at most %d groups. If changes are numerous, group less critical changes together rather than exceeding the limit.
+- For each group, include a brief rationale (1 sentence) explaining why these changes belong together.
 - CRITICAL: Before responding, count the total hunk_ids across all your groups and verify it equals the number provided. Missing even one hunk is a failure. Cross-reference against the checklist at the end of the input.`
 
 const rescueSystemPrompt = `You are a code change analyzer. During clustering, some hunks were not assigned to any group.
@@ -61,6 +63,15 @@ Rules:
 - Do not over-merge: keep unrelated groups separate.
 - Use stable group IDs: g1, g2, g3, etc.
 - Create at most %d groups.`
+
+// PromptFingerprint returns a short hash of all prompt templates. Changes when
+// any prompt text is modified, enabling detection of behavioral drift across
+// plan generations.
+func PromptFingerprint() string {
+	combined := clusteringSystemPrompt + rescueSystemPrompt + messagingSystemPrompt + mergeSystemPrompt
+	sum := sha256.Sum256([]byte(combined))
+	return fmt.Sprintf("%x", sum)[:16]
+}
 
 // ---------------------------------------------------------------------------
 // Compact ID mapping — replaces 64-char SHA256 hunk IDs with short tokens
@@ -1034,24 +1045,26 @@ func assemblePlan(ec enginectx.EngineContext, clustering ClusteringResponse, mes
 		}
 
 		commits = append(commits, models.CommitUnit{
-			ID:       fmt.Sprintf("c%d", i+1),
-			Type:     msg.Type,
-			Scope:    msg.Scope,
-			Subject:  subject,
-			Body:     msg.Body,
-			Breaking: msg.Breaking,
-			Footers:  footers,
-			Hunks:    groupHunks[g.ID],
+			ID:        fmt.Sprintf("c%d", i+1),
+			Type:      msg.Type,
+			Scope:     msg.Scope,
+			Subject:   subject,
+			Body:      msg.Body,
+			Breaking:  msg.Breaking,
+			Footers:   footers,
+			Hunks:     groupHunks[g.ID],
+			Rationale: g.Rationale,
 		})
 	}
 
 	return models.CommitPlan{
-		SchemaVersion:   models.CurrentSchemaVersion,
-		ToolVersion:     internal.Version,
-		BaseRef:         ec.BaseRef,
-		DiffFingerprint: models.DiffFingerprintFromHunks(ec.Hunks),
-		Style:           ec.Config.Style,
-		Commits:         commits,
+		SchemaVersion:     models.CurrentSchemaVersion,
+		ToolVersion:       internal.Version,
+		BaseRef:           ec.BaseRef,
+		DiffFingerprint:   models.DiffFingerprintFromHunks(ec.Hunks),
+		PromptFingerprint: PromptFingerprint(),
+		Style:             ec.Config.Style,
+		Commits:           commits,
 	}
 }
 
