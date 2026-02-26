@@ -60,8 +60,20 @@ type RescueResponse struct {
 	Assignments []RescueAssignment `json:"assignments" jsonschema_description:"Assignment of each orphaned hunk to an existing group"`
 }
 
+// MergeGroup maps a final group to one or more source batch groups.
+type MergeGroup struct {
+	ID           string   `json:"id" jsonschema_description:"Stable merged group identifier (g1, g2, ...)"`
+	SourceGroups []string `json:"source_groups" jsonschema_description:"Batch group IDs to combine into this group"`
+}
+
+// MergeResponse is the schema for the batch-merge LLM call.
+type MergeResponse struct {
+	Groups []MergeGroup `json:"groups" jsonschema_description:"Final merged groups combining batch-level groups"`
+}
+
 var (
 	ClusteringSchema = generateSchema[ClusteringResponse]()
 	MessagingSchema  = generateSchema[MessagingResponse]()
 	RescueSchema     = generateSchema[RescueResponse]()
+	MergeSchema      = generateSchema[MergeResponse]()
 )
