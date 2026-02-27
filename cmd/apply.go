@@ -21,8 +21,9 @@ import (
 )
 
 var (
-	yesFlag   bool
-	forceFlag bool
+	yesFlag          bool
+	forceFlag        bool
+	allowStalePrompts bool
 )
 
 var applyCmd = &cobra.Command{
@@ -35,6 +36,7 @@ var applyCmd = &cobra.Command{
 func init() {
 	applyCmd.Flags().BoolVar(&yesFlag, "yes", false, "actually apply commits (default is dry-run)")
 	applyCmd.Flags().BoolVar(&forceFlag, "force", false, "apply even when plan confidence is low")
+	applyCmd.Flags().BoolVar(&allowStalePrompts, "allow-stale-prompts", false, "reuse cached plan even if prompt fingerprint changed")
 	rootCmd.AddCommand(applyCmd)
 }
 
@@ -80,7 +82,7 @@ func runApply(cmd *cobra.Command, args []string) error {
 
 	printPlanSummary(cp, ec.Hunks)
 
-	pc := validators.AssessPlanConfidence(*cp, ec.Hunks)
+	pc := validators.AssessPlanConfidenceWithTrace(*cp, ec.Hunks, cp.Trace)
 	ui.PrintConfidence(pc.Level, pc.Score, pc.Warnings)
 
 	if dryRun {
@@ -88,8 +90,10 @@ func runApply(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
-	if pc.Level == "low" && !forceFlag {
-		ui.Error("\nPlan confidence is low — refusing to apply.\n")
+	threshold := cfg.Engine.Confidence.BlockThreshold()
+	if cfg.Engine.Confidence.BlocksApply() && pc.Score < threshold && !forceFlag {
+		ui.Error("\nPlan confidence too low (%.0f%%) — refusing to apply (profile: %s, threshold: %.0f%%).\n",
+			pc.Score*100, confidenceProfileName(), threshold*100)
 		ui.Info("Review the warnings above. To apply anyway, pass --force:\n")
 		ui.Dim("  intentra apply --yes --force\n")
 		return fmt.Errorf("plan confidence too low (%.0f%%); use --force to override", pc.Score*100)
@@ -144,13 +148,43 @@ func runApply(cmd *cobra.Command, args []string) error {
 
 func resolveCommitPlan(ctx context.Context, ec *enginectx.EngineContext) (*models.CommitPlan, error) {
 	currentFingerprint := models.DiffFingerprintFromHunks(ec.Hunks)
+	currentPrompts := planners.PromptFingerprint()
 
 	cached, err := loadCachedPlan()
 	if err == nil && cached.DiffFingerprint == currentFingerprint {
-		ui.Success("Using cached plan from %s (diff unchanged).\n", defaultPlanFile)
-		return cached, nil
-	}
-	if err == nil {
+		var staleReasons []string
+
+		schemaStale := cached.SchemaVersion != "" && cached.SchemaVersion != models.CurrentSchemaVersion
+		promptStale := cached.PromptFingerprint != "" && cached.PromptFingerprint != currentPrompts
+
+		if schemaStale {
+			staleReasons = append(staleReasons, "schema version changed")
+		}
+		if promptStale {
+			staleReasons = append(staleReasons, "prompt fingerprint changed")
+		}
+
+		if len(staleReasons) > 0 {
+			reason := strings.Join(staleReasons, ", ")
+
+			if schemaStale {
+				ui.Warn("Cached plan is stale (%s). Schema changes require a replan.\n", reason)
+			} else if allowStalePrompts {
+				ui.Warn("Cached plan is stale (%s) but --allow-stale-prompts was passed. Reusing.\n", reason)
+				return cached, nil
+			} else {
+				ui.Warn("Cached plan is stale (%s). Re-planning...\n", reason)
+			}
+
+			if promptStale {
+				ui.Verbose("  cached prompts: %s\n  current prompts: %s\n",
+					shortHash(cached.PromptFingerprint), planners.PromptFingerprintShort())
+			}
+		} else {
+			ui.Success("Using cached plan from %s (diff unchanged).\n", defaultPlanFile)
+			return cached, nil
+		}
+	} else if err == nil {
 		ui.Warn("Cached plan is stale (diff changed). Re-planning...\n")
 	} else {
 		ui.Info("No cached plan found.\n")
@@ -185,6 +219,21 @@ func resolveCommitPlan(ctx context.Context, ec *enginectx.EngineContext) (*model
 	}
 
 	return cp, nil
+}
+
+func shortHash(h string) string {
+	if len(h) > 16 {
+		return h[:16]
+	}
+	return h
+}
+
+func confidenceProfileName() string {
+	p := cfg.Engine.Confidence.Profile
+	if p == "" {
+		return "balanced"
+	}
+	return p
 }
 
 func checkProtectedBranch() error {
