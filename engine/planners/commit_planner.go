@@ -70,7 +70,15 @@ Rules:
 func PromptFingerprint() string {
 	combined := clusteringSystemPrompt + rescueSystemPrompt + messagingSystemPrompt + mergeSystemPrompt
 	sum := sha256.Sum256([]byte(combined))
-	return fmt.Sprintf("%x", sum)[:16]
+	return fmt.Sprintf("%x", sum)
+}
+
+func PromptFingerprintShort() string {
+	fp := PromptFingerprint()
+	if len(fp) > 16 {
+		return fp[:16]
+	}
+	return fp
 }
 
 // ---------------------------------------------------------------------------
@@ -259,10 +267,12 @@ func (p *CommitPlanner) BuildPlan(ctx context.Context, ec enginectx.EngineContex
 		defer cancel()
 	}
 
+	trace := &models.PipelineTrace{}
+
 	sortHunks(ec.Hunks)
 
 	p.progress(fmt.Sprintf("Clustering %d hunks...", len(ec.Hunks)))
-	clustering, err := p.clusterHunks(ctx, ec)
+	clustering, err := p.clusterHunks(ctx, ec, trace)
 	if err != nil {
 		return nil, fmt.Errorf("clustering: %w", err)
 	}
@@ -274,7 +284,24 @@ func (p *CommitPlanner) BuildPlan(ctx context.Context, ec enginectx.EngineContex
 	}
 
 	plan := assemblePlan(ec, clustering, messaging)
+
+	orderBefore := make([]string, len(plan.Commits))
+	for i, c := range plan.Commits {
+		orderBefore[i] = c.ID
+	}
+	trace.CommitsBefore = len(plan.Commits)
+
 	reorderCommitsByDependency(&plan, ec.Hunks)
+
+	trace.CommitsAfter = len(plan.Commits)
+	for i, c := range plan.Commits {
+		if i < len(orderBefore) && orderBefore[i] != c.ID {
+			trace.ReorderApplied = true
+			break
+		}
+	}
+
+	plan.Trace = trace
 	return &plan, nil
 }
 
@@ -288,7 +315,7 @@ func (p *CommitPlanner) BuildPlan(ctx context.Context, ec enginectx.EngineContex
 // All paths return a ClusteringResponse containing real hunk IDs.
 // ---------------------------------------------------------------------------
 
-func (p *CommitPlanner) clusterHunks(ctx context.Context, ec enginectx.EngineContext) (ClusteringResponse, error) {
+func (p *CommitPlanner) clusterHunks(ctx context.Context, ec enginectx.EngineContext, trace *models.PipelineTrace) (ClusteringResponse, error) {
 	batchThreshold := ec.Config.Engine.BatchThreshold
 	if batchThreshold <= 0 {
 		batchThreshold = 40
@@ -304,11 +331,14 @@ func (p *CommitPlanner) clusterHunks(ctx context.Context, ec enginectx.EngineCon
 	units := preGroupByFile(ec.Hunks)
 	switch {
 	case len(ec.Hunks) <= batchThreshold:
+		trace.Strategy = "direct"
 		cr, err = p.clusterDirect(ctx, ec, maxCommits)
 	case len(units) <= batchThreshold:
+		trace.Strategy = "file_level"
 		p.progress(fmt.Sprintf("File-level clustering (%d files from %d hunks)...", len(units), len(ec.Hunks)))
 		cr, err = p.clusterByFile(ctx, ec, units, maxCommits)
 	default:
+		trace.Strategy = "batched"
 		p.progress(fmt.Sprintf("Batched clustering (%d files)...", len(units)))
 		cr, err = p.clusterBatched(ctx, ec, units, batchThreshold, maxCommits)
 	}
@@ -316,20 +346,36 @@ func (p *CommitPlanner) clusterHunks(ctx context.Context, ec enginectx.EngineCon
 		return cr, err
 	}
 
+	beforeDedup := countTotalHunks(cr)
 	cr = deduplicateGroups(cr)
+	afterDedup := countTotalHunks(cr)
+	trace.DedupCount = beforeDedup - afterDedup
+
 	cr = consolidateSingleFileGroups(cr, ec.Hunks)
 
 	missing := findMissingHunks(cr, ec.Hunks)
+	trace.OrphanCount = len(missing)
 	if len(missing) > 0 {
+		trace.RescueAttempted = true
 		rescued, rescueErr := p.rescueOrphanHunks(ctx, cr, missing, ec.Hunks)
 		if rescueErr == nil {
+			trace.RescueSucceeded = true
 			cr = rescued
 		} else {
 			cr = repairMissingHunks(cr, ec.Hunks)
+			trace.RepairCount = len(missing)
 		}
 	}
 
 	return cr, nil
+}
+
+func countTotalHunks(cr ClusteringResponse) int {
+	n := 0
+	for _, g := range cr.Groups {
+		n += len(g.HunkIDs)
+	}
+	return n
 }
 
 // clusterDirect clusters hunks directly with compact prompt IDs.
