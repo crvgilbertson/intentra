@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -15,11 +16,15 @@ import (
 	"github.com/crvgilbertson/intentra/engine/planners"
 	"github.com/crvgilbertson/intentra/engine/reasoning"
 	"github.com/crvgilbertson/intentra/engine/validators"
+	"github.com/crvgilbertson/intentra/internal"
 )
 
 var defaultPlanFile = config.PlanPath
 
-var jsonOutput bool
+var (
+	jsonOutput   bool
+	snapshotFile string
+)
 
 var planCmd = &cobra.Command{
 	Use:   "plan",
@@ -30,6 +35,7 @@ var planCmd = &cobra.Command{
 
 func init() {
 	planCmd.Flags().BoolVar(&jsonOutput, "json", false, "output raw CommitPlan JSON")
+	planCmd.Flags().StringVar(&snapshotFile, "snapshot", "", "export reproducible plan snapshot to file")
 	rootCmd.AddCommand(planCmd)
 }
 
@@ -78,10 +84,21 @@ func runPlan(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("plan validation failed: %w", err)
 	}
 
+	pc := validators.AssessPlanConfidenceWithTrace(*cp, ec.Hunks, cp.Trace)
+	cp.Confidence = &models.PlanConfidence{
+		Overall:    pc.Score,
+		Level:      pc.Level,
+		Components: pc.Components,
+	}
+
 	if err := savePlan(cp); err != nil {
 		ui.Warn("Warning: could not save plan cache: %v\n", err)
 	} else {
 		ui.Dim("Plan saved to %s\n", defaultPlanFile)
+	}
+
+	if snapshotFile != "" {
+		return writeSnapshot(cp, &ec)
 	}
 
 	if jsonOutput {
@@ -94,7 +111,7 @@ func runPlan(cmd *cobra.Command, args []string) error {
 	}
 
 	printPlanSummary(cp, ec.Hunks)
-	printConfidence(cp, ec.Hunks)
+	ui.PrintConfidence(pc.Level, pc.Score, pc.Warnings)
 	return nil
 }
 
@@ -142,6 +159,49 @@ func uniqueFiles(hunkIDs []string, hunkFileMap map[string]string) []string {
 	return files
 }
 
+func writeSnapshot(cp *models.CommitPlan, ec *enginectx.EngineContext) error {
+	hunkMetas := make([]models.HunkMeta, len(ec.Hunks))
+	for i, h := range ec.Hunks {
+		hunkMetas[i] = models.HunkMetaFromHunk(h)
+	}
+
+	snap := models.PlanSnapshot{
+		EngineVersion:     internal.Version,
+		SchemaVersion:     models.CurrentSchemaVersion,
+		PromptFingerprint: planners.PromptFingerprint(),
+		Provider:          cfg.AI.Provider,
+		Model:             cfg.AI.Model,
+		Config: models.SnapshotConfig{
+			Provider:       cfg.AI.Provider,
+			Model:          cfg.AI.Model,
+			Temperature:    cfg.AI.Temperature,
+			MaxCommits:     cfg.Engine.MaxCommits,
+			MaxHunkLines:   cfg.AI.MaxHunkLines,
+			BatchThreshold: cfg.Engine.BatchThreshold,
+			Style:          cfg.Style,
+		},
+		DiffFingerprint: cp.DiffFingerprint,
+		HunkCount:       len(ec.Hunks),
+		Hunks:           hunkMetas,
+		Plan:            *cp,
+		Confidence:      cp.Confidence,
+		Trace:           cp.Trace,
+		Timestamp:       time.Now().UTC(),
+	}
+
+	data, err := json.MarshalIndent(snap, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshalling snapshot: %w", err)
+	}
+
+	if err := os.WriteFile(snapshotFile, data, 0644); err != nil {
+		return fmt.Errorf("writing snapshot to %s: %w", snapshotFile, err)
+	}
+
+	ui.Success("Snapshot written to %s\n", snapshotFile)
+	return nil
+}
+
 func savePlan(cp *models.CommitPlan) error {
 	if err := config.EnsureDir(); err != nil {
 		return fmt.Errorf("creating %s: %w", config.Dir, err)
@@ -162,17 +222,9 @@ func loadCachedPlan() (*models.CommitPlan, error) {
 	if err := json.Unmarshal(data, &cp); err != nil {
 		return nil, fmt.Errorf("parsing cached plan: %w", err)
 	}
-	if cp.SchemaVersion != "" && cp.SchemaVersion != models.CurrentSchemaVersion {
-		return nil, fmt.Errorf("cached plan has schema %s (current: %s) — re-run 'intentra plan' to regenerate",
-			cp.SchemaVersion, models.CurrentSchemaVersion)
-	}
 	if err := cp.Validate(); err != nil {
 		return nil, fmt.Errorf("cached plan is structurally invalid: %w", err)
 	}
 	return &cp, nil
 }
 
-func printConfidence(cp *models.CommitPlan, hunks []models.Hunk) {
-	pc := validators.AssessPlanConfidence(*cp, hunks)
-	ui.PrintConfidence(pc.Level, pc.Score, pc.Warnings)
-}

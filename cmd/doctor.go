@@ -218,7 +218,11 @@ func buildTrustSurface(provider string, maxHunkLines int) trustInfo {
 }
 
 func printDiagnosticText(r diagnosticReport, diffErr error) {
-	fmt.Printf("Intentra v%s (schema %s, prompts %s)\n", r.Version, r.SchemaVersion, r.PromptFingerprint)
+	promptShort := r.PromptFingerprint
+	if len(promptShort) > 16 {
+		promptShort = promptShort[:16]
+	}
+	fmt.Printf("Intentra v%s (schema %s, prompts %s)\n", r.Version, r.SchemaVersion, promptShort)
 	fmt.Println()
 
 	section("Config")

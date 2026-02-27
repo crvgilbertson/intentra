@@ -44,14 +44,42 @@ func (c CommitUnit) FullSubject() string {
 
 const CurrentSchemaVersion = "v1"
 
+type ConfidenceComponents struct {
+	Coverage       float64 `json:"coverage"`
+	Entanglement   float64 `json:"entanglement"`
+	RepairActivity float64 `json:"repair_activity"`
+	Overlap        float64 `json:"overlap"`
+	ReorderPenalty float64 `json:"reorder_penalty"`
+}
+
+type PlanConfidence struct {
+	Overall    float64              `json:"overall"`
+	Level      string               `json:"level"`
+	Components ConfidenceComponents `json:"components"`
+}
+
+type PipelineTrace struct {
+	Strategy        string `json:"strategy"`
+	DedupCount      int    `json:"dedup_count"`
+	OrphanCount     int    `json:"orphan_count"`
+	RescueAttempted bool   `json:"rescue_attempted"`
+	RescueSucceeded bool   `json:"rescue_succeeded"`
+	RepairCount     int    `json:"repair_count"`
+	ReorderApplied  bool   `json:"reorder_applied"`
+	CommitsBefore   int    `json:"commits_before_reorder"`
+	CommitsAfter    int    `json:"commits_after_reorder"`
+}
+
 type CommitPlan struct {
-	SchemaVersion     string       `json:"schema_version"`
-	ToolVersion       string       `json:"tool_version"`
-	BaseRef           string       `json:"base_ref"`
-	DiffFingerprint   string       `json:"diff_fingerprint"`
-	PromptFingerprint string       `json:"prompt_fingerprint,omitempty"`
-	Style             CommitStyle  `json:"style"`
-	Commits           []CommitUnit `json:"commits"`
+	SchemaVersion     string          `json:"schema_version"`
+	ToolVersion       string          `json:"tool_version"`
+	BaseRef           string          `json:"base_ref"`
+	DiffFingerprint   string          `json:"diff_fingerprint"`
+	PromptFingerprint string          `json:"prompt_fingerprint,omitempty"`
+	Style             CommitStyle     `json:"style"`
+	Commits           []CommitUnit    `json:"commits"`
+	Confidence        *PlanConfidence `json:"confidence,omitempty"`
+	Trace             *PipelineTrace  `json:"trace,omitempty"`
 }
 
 // DiffFingerprintFromHunks produces a stable hash of all hunk IDs. If the
