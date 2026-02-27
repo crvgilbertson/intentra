@@ -501,6 +501,255 @@ func main() {
 	}
 }
 
+func TestGitExecutor_HookFailureRollback(t *testing.T) {
+	dir := setupTestRepo(t)
+
+	run := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		cmd.Env = append(os.Environ(),
+			"GIT_AUTHOR_NAME=test",
+			"GIT_AUTHOR_EMAIL=test@test.com",
+			"GIT_COMMITTER_NAME=test",
+			"GIT_COMMITTER_EMAIL=test@test.com",
+		)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %s failed: %v\n%s", strings.Join(args, " "), err, out)
+		}
+	}
+
+	writeFile(t, dir, "extra.go", "package main\n\nfunc extra() {}\n")
+	run("add", ".")
+	run("commit", "-m", "add extra.go")
+
+	originalHead := gitHead(t, dir)
+
+	writeFile(t, dir, "hello.go", "package main\n\nimport \"fmt\"\n\nfunc main() {\n\tfmt.Println(\"hello\")\n}\n")
+	writeFile(t, dir, "extra.go", "package main\n\nimport \"fmt\"\n\nfunc extra() {\n\tfmt.Println(\"extra\")\n}\n")
+
+	cmd := exec.Command("git", "diff", "HEAD")
+	cmd.Dir = dir
+	diffOut, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("git diff HEAD: %v", err)
+	}
+
+	hunks := parseDiffForTest(string(diffOut))
+	if len(hunks) == 0 {
+		t.Fatal("expected hunks from diff")
+	}
+
+	var helloHunkIDs, extraHunkIDs []string
+	for _, h := range hunks {
+		if strings.Contains(h.FilePath, "extra.go") {
+			extraHunkIDs = append(extraHunkIDs, h.HunkID)
+		} else {
+			helloHunkIDs = append(helloHunkIDs, h.HunkID)
+		}
+	}
+	if len(helloHunkIDs) == 0 || len(extraHunkIDs) == 0 {
+		t.Fatalf("expected hunks for both files, got hello=%d extra=%d", len(helloHunkIDs), len(extraHunkIDs))
+	}
+
+	hooksDir := filepath.Join(dir, ".git", "hooks")
+	os.MkdirAll(hooksDir, 0755)
+	hookScript := "#!/bin/sh\nif git diff --cached --name-only | grep -q extra.go; then\n  echo 'hook rejected: extra.go' >&2\n  exit 1\nfi\n"
+	if err := os.WriteFile(filepath.Join(hooksDir, "pre-commit"), []byte(hookScript), 0755); err != nil {
+		t.Fatalf("writing hook: %v", err)
+	}
+
+	plan := &models.CommitPlan{
+		Commits: []models.CommitUnit{
+			{ID: "c1", Type: "refactor", Subject: "use fmt for printing", Hunks: helloHunkIDs},
+			{ID: "c2", Type: "refactor", Subject: "use fmt in extra", Hunks: extraHunkIDs},
+		},
+	}
+
+	executor := NewGitExecutorWithHunks(dir, hunks, ExecutorOptions{})
+	err = executor.Execute(context.Background(), plan, false)
+	if err == nil {
+		t.Fatal("expected error from hook rejection on c2")
+	}
+
+	if !strings.Contains(err.Error(), "hook") {
+		t.Errorf("error should mention hook: %v", err)
+	}
+	if !strings.Contains(err.Error(), "rolled back") {
+		t.Errorf("error should mention rollback of prior commit: %v", err)
+	}
+
+	currentHead := gitHead(t, dir)
+	if currentHead != originalHead {
+		t.Errorf("HEAD should be restored to %s, got %s", originalHead, currentHead)
+	}
+
+	logs := gitLog(t, dir)
+	if len(logs) != 2 {
+		t.Errorf("expected 2 commits after rollback (initial + add extra.go), got %d: %v", len(logs), logs)
+	}
+}
+
+func TestGitExecutor_OrphanBranchRollback(t *testing.T) {
+	dir := t.TempDir()
+
+	run := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		cmd.Env = append(os.Environ(),
+			"GIT_AUTHOR_NAME=test",
+			"GIT_AUTHOR_EMAIL=test@test.com",
+			"GIT_COMMITTER_NAME=test",
+			"GIT_COMMITTER_EMAIL=test@test.com",
+		)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %s failed: %v\n%s", strings.Join(args, " "), err, out)
+		}
+	}
+
+	run("init")
+	run("config", "user.email", "test@test.com")
+	run("config", "user.name", "test")
+
+	writeFile(t, dir, "new1.go", "package main\n\nfunc new1() {}\n")
+
+	goodHunk := models.Hunk{
+		FilePath: "new1.go",
+		Header:   "@@ -0,0 +1,3 @@",
+		Patch:    "+package main\n+\n+func new1() {}",
+		NewFile:  true,
+	}
+	goodHunk.HunkID = testHash(goodHunk)
+
+	badHunk := models.Hunk{
+		FilePath: "nonexistent.go",
+		Header:   "@@ -1 +1 @@",
+		Patch:    "+broken",
+	}
+	badHunk.HunkID = testHash(badHunk)
+
+	hunks := []models.Hunk{goodHunk, badHunk}
+
+	plan := &models.CommitPlan{
+		Commits: []models.CommitUnit{
+			{ID: "c1", Type: "feat", Subject: "add new1.go", Hunks: []string{goodHunk.HunkID}},
+			{ID: "c2", Type: "fix", Subject: "bad change", Hunks: []string{badHunk.HunkID}},
+		},
+	}
+
+	executor := NewGitExecutorWithHunks(dir, hunks, ExecutorOptions{})
+	err := executor.Execute(context.Background(), plan, false)
+	if err == nil {
+		t.Fatal("expected error for bad patch in c2")
+	}
+
+	if !strings.Contains(err.Error(), "rolled back") {
+		t.Errorf("error should mention rollback: %v", err)
+	}
+
+	headCmd := exec.Command("git", "rev-parse", "HEAD")
+	headCmd.Dir = dir
+	if out, headErr := headCmd.CombinedOutput(); headErr == nil {
+		t.Errorf("expected HEAD to not exist after orphan rollback, but got: %s", strings.TrimSpace(string(out)))
+	}
+
+	logCmd := exec.Command("git", "log", "--oneline")
+	logCmd.Dir = dir
+	if out, logErr := logCmd.CombinedOutput(); logErr == nil {
+		t.Errorf("expected git log to fail (no commits), but got: %s", strings.TrimSpace(string(out)))
+	}
+}
+
+func TestGitExecutor_WorkingTreeDrift(t *testing.T) {
+	dir := setupTestRepo(t)
+
+	run := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		cmd.Env = append(os.Environ(),
+			"GIT_AUTHOR_NAME=test",
+			"GIT_AUTHOR_EMAIL=test@test.com",
+			"GIT_COMMITTER_NAME=test",
+			"GIT_COMMITTER_EMAIL=test@test.com",
+		)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %s failed: %v\n%s", strings.Join(args, " "), err, out)
+		}
+	}
+
+	writeFile(t, dir, "extra.go", "package main\n\nfunc extra() {}\n")
+	run("add", ".")
+	run("commit", "-m", "add extra.go")
+
+	originalHead := gitHead(t, dir)
+
+	writeFile(t, dir, "hello.go", "package main\n\nimport \"fmt\"\n\nfunc main() {\n\tfmt.Println(\"hello\")\n}\n")
+	writeFile(t, dir, "extra.go", "package main\n\nimport \"fmt\"\n\nfunc extra() {\n\tfmt.Println(\"extra\")\n}\n")
+
+	cmd := exec.Command("git", "diff", "HEAD")
+	cmd.Dir = dir
+	diffOut, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("git diff HEAD: %v", err)
+	}
+
+	hunks := parseDiffForTest(string(diffOut))
+	if len(hunks) == 0 {
+		t.Fatal("expected hunks from diff")
+	}
+
+	var helloHunkIDs, extraHunkIDs []string
+	for _, h := range hunks {
+		if strings.Contains(h.FilePath, "extra.go") {
+			extraHunkIDs = append(extraHunkIDs, h.HunkID)
+		} else {
+			helloHunkIDs = append(helloHunkIDs, h.HunkID)
+		}
+	}
+	if len(helloHunkIDs) == 0 || len(extraHunkIDs) == 0 {
+		t.Fatalf("expected hunks for both files, got hello=%d extra=%d", len(helloHunkIDs), len(extraHunkIDs))
+	}
+
+	hooksDir := filepath.Join(dir, ".git", "hooks")
+	os.MkdirAll(hooksDir, 0755)
+	hookScript := "#!/bin/sh\necho '// external drift' >> extra.go\n"
+	if err := os.WriteFile(filepath.Join(hooksDir, "post-commit"), []byte(hookScript), 0755); err != nil {
+		t.Fatalf("writing hook: %v", err)
+	}
+
+	plan := &models.CommitPlan{
+		Commits: []models.CommitUnit{
+			{ID: "c1", Type: "refactor", Subject: "use fmt for printing", Hunks: helloHunkIDs},
+			{ID: "c2", Type: "refactor", Subject: "use fmt in extra", Hunks: extraHunkIDs},
+		},
+	}
+
+	executor := NewGitExecutorWithHunks(dir, hunks, ExecutorOptions{})
+	err = executor.Execute(context.Background(), plan, false)
+	if err == nil {
+		t.Fatal("expected error from working tree drift detection")
+	}
+
+	if !strings.Contains(err.Error(), "working tree changed externally") {
+		t.Errorf("error should mention working tree drift: %v", err)
+	}
+
+	currentHead := gitHead(t, dir)
+	if currentHead != originalHead {
+		t.Errorf("HEAD should be restored to %s, got %s", originalHead, currentHead)
+	}
+
+	logs := gitLog(t, dir)
+	if len(logs) != 2 {
+		t.Errorf("expected 2 commits after drift rollback, got %d: %v", len(logs), logs)
+	}
+}
+
 func parseDiffForTest(raw string) []models.Hunk {
 	var hunks []models.Hunk
 	sections := strings.Split(raw, "diff --git ")

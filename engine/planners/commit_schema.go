@@ -4,8 +4,9 @@ import "github.com/invopop/jsonschema"
 
 // ClusterGroup represents one logical group of hunks from the clustering pass.
 type ClusterGroup struct {
-	ID      string   `json:"id" jsonschema_description:"Stable group identifier (g1, g2, ...)"`
-	HunkIDs []string `json:"hunk_ids" jsonschema_description:"List of hunk_id values in this group"`
+	ID        string   `json:"id" jsonschema_description:"Stable group identifier (g1, g2, ...)"`
+	HunkIDs   []string `json:"hunk_ids" jsonschema_description:"List of hunk_id values in this group"`
+	Rationale string   `json:"rationale" jsonschema_description:"One sentence explaining why these hunks belong together"`
 }
 
 // ClusteringResponse is the schema for the clustering LLM call.

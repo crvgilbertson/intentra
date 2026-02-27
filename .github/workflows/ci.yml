@@ -1,0 +1,69 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+
+      - name: Build
+        run: go build ./...
+
+      - name: Test
+        run: go test ./... -timeout 120s
+
+      - name: Vet
+        run: go vet ./...
+
+  boundaries:
+    name: Architecture Boundaries
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+
+      - name: Check import boundaries
+        run: go run scripts/check-imports.go
+
+  schema:
+    name: Schema Discipline
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+
+      - name: Verify schema version is set and validated
+        run: |
+          # CurrentSchemaVersion must be defined
+          grep -q 'CurrentSchemaVersion' engine/models/commit_plan.go \
+            || { echo "FAIL: CurrentSchemaVersion not found in commit_plan.go"; exit 1; }
+
+          # Plan saving must set SchemaVersion
+          grep -q 'SchemaVersion.*CurrentSchemaVersion' engine/planners/commit_planner.go \
+            || { echo "FAIL: assemblePlan does not set SchemaVersion"; exit 1; }
+
+          # Plan loading must check SchemaVersion
+          grep -q 'SchemaVersion.*CurrentSchemaVersion' cmd/plan.go \
+            || { echo "FAIL: loadCachedPlan does not validate SchemaVersion"; exit 1; }
+
+          echo "Schema discipline checks passed."

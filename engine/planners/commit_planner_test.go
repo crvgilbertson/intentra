@@ -129,6 +129,9 @@ func TestCommitPlanner_BuildPlan_Success(t *testing.T) {
 	if cp.BaseRef != "abc123" {
 		t.Errorf("expected base ref abc123, got %s", cp.BaseRef)
 	}
+	if cp.PromptFingerprint == "" {
+		t.Error("expected non-empty prompt fingerprint")
+	}
 }
 
 func TestCommitPlanner_BuildPlan_NoHunks(t *testing.T) {
@@ -696,5 +699,121 @@ func TestBuildFileUnitClusteringInput(t *testing.T) {
 	}
 	if !contains(input, "auth.go") || !contains(input, "ui.go") {
 		t.Error("expected file paths in input")
+	}
+}
+
+// TestSnapshotRegression pins the deterministic post-LLM pipeline:
+// deduplication, orphan repair (file-path fallback), dependency ordering,
+// ID normalization, rationale carry-through, and prompt fingerprinting.
+// If any of these behaviors change, the test fails — forcing an explicit
+// decision rather than a silent regression.
+func TestSnapshotRegression(t *testing.T) {
+	hunks := []models.Hunk{
+		{HunkID: "h_cmd", FilePath: "cmd/main.go", Header: "@@ -1 +1 @@", Patch: "+main"},
+		{HunkID: "h_doc", FilePath: "docs/README.md", Header: "@@ -1 +1 @@", Patch: "+docs"},
+		{HunkID: "h_exec", FilePath: "engine/executors/exec.go", Header: "@@ -1 +1 @@", Patch: "+exec"},
+		{HunkID: "h_mod1", FilePath: "engine/models/types.go", Header: "@@ -1 +1 @@", Patch: "+type1"},
+		{HunkID: "h_mod2", FilePath: "engine/models/types.go", Header: "@@ -10 +10 @@", Patch: "+type2"},
+		{HunkID: "h_plan", FilePath: "engine/planners/planner.go", Header: "@@ -1 +1 @@", Patch: "+plan"},
+	}
+
+	// After sortHunks: cmd/main.go, docs/README.md, engine/executors/exec.go,
+	//   engine/models/types.go (@@-1), engine/models/types.go (@@-10),
+	//   engine/planners/planner.go
+	// Compact IDs: h1=h_cmd, h2=h_doc, h3=h_exec, h4=h_mod1, h5=h_mod2, h6=h_plan
+
+	cfg := testConfig()
+	ec := enginectx.EngineContext{
+		BaseRef: "snapshot-base",
+		Hunks:   hunks,
+		Config:  cfg,
+	}
+
+	// Clustering with intentional duplicate (h4 twice) and missing hunks (h2, h3).
+	clusterResp := ClusteringResponse{
+		Groups: []ClusterGroup{
+			{ID: "g1", HunkIDs: []string{"h4", "h5", "h4"}, Rationale: "type definitions"},
+			{ID: "g2", HunkIDs: []string{"h6"}, Rationale: "planner logic"},
+			{ID: "g3", HunkIDs: []string{"h1"}, Rationale: "cli entrypoint"},
+		},
+	}
+
+	// Rescue call fails → triggers file-path fallback.
+	// h_doc and h_exec have no file match → land in the largest group (g1).
+
+	scope := "models"
+	messagingResp := MessagingResponse{
+		Commits: []CommitMessageWithGroup{
+			{GroupID: "g1", CommitMessage: CommitMessage{Type: "refactor", Scope: &scope, Subject: "update type definitions"}},
+			{GroupID: "g2", CommitMessage: CommitMessage{Type: "refactor", Subject: "update planner logic"}},
+			{GroupID: "g3", CommitMessage: CommitMessage{Type: "chore", Subject: "update CLI entrypoint"}},
+		},
+	}
+
+	engine := &mockEngine{
+		responses: []json.RawMessage{mustJSON(clusterResp), nil, mustJSON(messagingResp)},
+		errors:    []error{nil, fmt.Errorf("rescue failed"), nil},
+	}
+
+	planner := NewCommitPlanner(engine)
+	plan, err := planner.BuildPlan(context.Background(), ec)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	cp := plan.(*models.CommitPlan)
+
+	// --- Pin: commit count ---
+	if len(cp.Commits) != 3 {
+		t.Fatalf("expected 3 commits, got %d", len(cp.Commits))
+	}
+
+	// --- Pin: dependency ordering ---
+	// models (layer 0) < planners (layer 3) < cmd (layer 6)
+	layers := []string{cp.Commits[0].Type, cp.Commits[1].Type, cp.Commits[2].Type}
+	if layers[0] != "refactor" || layers[2] != "chore" {
+		t.Errorf("expected [refactor, refactor, chore] ordering, got %v", layers)
+	}
+	if cp.Commits[0].Scope == nil || *cp.Commits[0].Scope != "models" {
+		t.Errorf("c1 should be the models commit (scope=models)")
+	}
+
+	// --- Pin: dedup + orphan repair ---
+	// g1 originally had [h_mod1, h_mod2, h_mod1 (dup)].
+	// After dedup: [h_mod1, h_mod2]. After repair: + h_doc, h_exec = 4 hunks.
+	if len(cp.Commits[0].Hunks) != 4 {
+		t.Errorf("c1 should have 4 hunks (2 original + 2 repaired orphans), got %d: %v",
+			len(cp.Commits[0].Hunks), cp.Commits[0].Hunks)
+	}
+
+	// --- Pin: stable IDs ---
+	for i, c := range cp.Commits {
+		expected := fmt.Sprintf("c%d", i+1)
+		if c.ID != expected {
+			t.Errorf("commit %d should be %s, got %s", i, expected, c.ID)
+		}
+	}
+
+	// --- Pin: prompt fingerprint ---
+	if cp.PromptFingerprint == "" {
+		t.Error("expected non-empty prompt fingerprint")
+	}
+	if cp.PromptFingerprint != PromptFingerprint() {
+		t.Errorf("prompt fingerprint mismatch: plan=%s current=%s", cp.PromptFingerprint, PromptFingerprint())
+	}
+
+	// --- Pin: rationale carry-through ---
+	if cp.Commits[0].Rationale != "type definitions" {
+		t.Errorf("expected rationale 'type definitions' on c1, got %q", cp.Commits[0].Rationale)
+	}
+	if cp.Commits[1].Rationale != "planner logic" {
+		t.Errorf("expected rationale 'planner logic' on c2, got %q", cp.Commits[1].Rationale)
+	}
+
+	// --- Pin: prompt fingerprint is deterministic ---
+	fp1 := PromptFingerprint()
+	fp2 := PromptFingerprint()
+	if fp1 != fp2 {
+		t.Errorf("PromptFingerprint is not deterministic: %s != %s", fp1, fp2)
 	}
 }
