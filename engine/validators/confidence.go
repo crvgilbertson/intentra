@@ -12,10 +12,11 @@ import (
 
 // PlanConfidence describes the overall confidence level of a commit plan.
 type PlanConfidence struct {
-	Score    float64          // 0.0 (no confidence) to 1.0 (high confidence)
-	Level    string           // "high", "medium", "low"
-	Warnings []string         // human-readable risk signals
-	Risks    []CommitRisk     // per-commit risk details
+	Score      float64          // 0.0 (no confidence) to 1.0 (high confidence)
+	Level      string           // "high", "medium", "low"
+	Warnings   []string         // human-readable risk signals
+	Risks      []CommitRisk     // per-commit risk details
+	Components models.ConfidenceComponents
 }
 
 // CommitRisk describes risk factors for a single commit.
@@ -28,6 +29,12 @@ type CommitRisk struct {
 // assessment based on structural heuristics. This does NOT call the LLM;
 // it is a pure function over the plan and hunk data.
 func AssessPlanConfidence(plan models.CommitPlan, hunks []models.Hunk) PlanConfidence {
+	return AssessPlanConfidenceWithTrace(plan, hunks, nil)
+}
+
+// AssessPlanConfidenceWithTrace is AssessPlanConfidence with optional trace
+// data used to compute repair_activity and reorder_penalty components.
+func AssessPlanConfidenceWithTrace(plan models.CommitPlan, hunks []models.Hunk, trace *models.PipelineTrace) PlanConfidence {
 	pc := PlanConfidence{Score: 1.0}
 
 	hunkByID := make(map[string]models.Hunk, len(hunks))
@@ -50,6 +57,31 @@ func AssessPlanConfidence(plan models.CommitPlan, hunks []models.Hunk) PlanConfi
 		pc.Score = 0.0
 	}
 
+	coverageScore := 1.0
+	repairActivity := 1.0
+	reorderPenalty := 1.0
+
+	if trace != nil {
+		totalHunks := len(hunks)
+		if totalHunks > 0 && trace.OrphanCount > 0 {
+			repairActivity = 1.0 - float64(trace.OrphanCount)/float64(totalHunks)*0.5
+			if repairActivity < 0 {
+				repairActivity = 0
+			}
+		}
+		if trace.ReorderApplied {
+			reorderPenalty = 0.95
+		}
+	}
+
+	pc.Components = models.ConfidenceComponents{
+		Coverage:       coverageScore,
+		Entanglement:   clampScore(1.0 - entanglePenalty),
+		RepairActivity: repairActivity,
+		Overlap:        clampScore(1.0 - overlapPenalty),
+		ReorderPenalty: reorderPenalty,
+	}
+
 	switch {
 	case pc.Score >= 0.8:
 		pc.Level = "high"
@@ -60,6 +92,16 @@ func AssessPlanConfidence(plan models.CommitPlan, hunks []models.Hunk) PlanConfi
 	}
 
 	return pc
+}
+
+func clampScore(v float64) float64 {
+	if v > 1.0 {
+		return 1.0
+	}
+	if v < 0.0 {
+		return 0.0
+	}
+	return v
 }
 
 // assessFileOverlap penalizes plans where the same file is modified in
