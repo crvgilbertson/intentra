@@ -31,17 +31,37 @@ type AIConfig struct {
 	MaxHunkLines int     `yaml:"max_hunk_lines"`
 }
 
+type ConfidenceConfig struct {
+	Profile string `yaml:"profile,omitempty"` // "strict", "balanced", "permissive"
+}
+
+func (c ConfidenceConfig) BlockThreshold() float64 {
+	switch c.Profile {
+	case "strict":
+		return 0.9
+	case "permissive":
+		return 0.0
+	default:
+		return 0.75
+	}
+}
+
+func (c ConfidenceConfig) BlocksApply() bool {
+	return c.Profile != "permissive"
+}
+
 type EngineSettings struct {
-	StrictMode        bool     `yaml:"strict_mode"`
-	ProtectedBranches []string `yaml:"protected_branches"`
-	MaxCommits        int      `yaml:"max_commits"`
-	IgnorePatterns    []string `yaml:"ignore_patterns"`
-	SignCommits       bool     `yaml:"sign_commits"`
-	AutoPush          bool     `yaml:"auto_push"`
-	RemoteName        string   `yaml:"remote_name"`
-	CommitAuthor      string   `yaml:"commit_author,omitempty"`
-	SkipHooks         bool     `yaml:"skip_hooks"`
-	BatchThreshold    int      `yaml:"batch_threshold"`
+	StrictMode        bool             `yaml:"strict_mode"`
+	ProtectedBranches []string         `yaml:"protected_branches"`
+	MaxCommits        int              `yaml:"max_commits"`
+	IgnorePatterns    []string         `yaml:"ignore_patterns"`
+	SignCommits       bool             `yaml:"sign_commits"`
+	AutoPush          bool             `yaml:"auto_push"`
+	RemoteName        string           `yaml:"remote_name"`
+	CommitAuthor      string           `yaml:"commit_author,omitempty"`
+	SkipHooks         bool             `yaml:"skip_hooks"`
+	BatchThreshold    int              `yaml:"batch_threshold"`
+	Confidence        ConfidenceConfig `yaml:"confidence,omitempty"`
 }
 
 type EngineConfig struct {
