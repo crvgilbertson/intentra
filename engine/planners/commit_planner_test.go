@@ -123,8 +123,8 @@ func TestCommitPlanner_BuildPlan_Success(t *testing.T) {
 	if cp.SchemaVersion != models.CurrentSchemaVersion {
 		t.Errorf("expected schema version %s, got %s", models.CurrentSchemaVersion, cp.SchemaVersion)
 	}
-	if cp.ToolVersion != "0.3.0" {
-		t.Errorf("expected tool version 0.3.0, got %s", cp.ToolVersion)
+	if cp.ToolVersion != "0.4.0" {
+		t.Errorf("expected tool version 0.4.0, got %s", cp.ToolVersion)
 	}
 	if cp.BaseRef != "abc123" {
 		t.Errorf("expected base ref abc123, got %s", cp.BaseRef)
