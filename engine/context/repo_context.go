@@ -15,6 +15,7 @@ import (
 // EngineContext holds all repository state needed by planners.
 type EngineContext struct {
 	BaseRef       string
+	RootPath      string
 	Hunks         []models.Hunk
 	RecentCommits []string
 	Config        config.EngineConfig
@@ -70,6 +71,7 @@ func BuildContext(ctx context.Context, cfg config.EngineConfig) (EngineContext, 
 
 	return EngineContext{
 		BaseRef:       baseRef,
+		RootPath:      root,
 		Hunks:         hunks,
 		RecentCommits: commits,
 		Config:        cfg,
@@ -193,6 +195,16 @@ func shouldIgnore(filePath string, patterns []string) bool {
 		}
 	}
 	return false
+}
+
+// RepoRoot returns the repository root directory for the current working directory,
+// or "" if not in a git repo. Used by replay to enable import-graph ordering.
+func RepoRoot(ctx context.Context) string {
+	root, err := repoRoot(ctx)
+	if err != nil {
+		return ""
+	}
+	return root
 }
 
 // repoRoot returns the absolute path of the repository's top-level directory.
