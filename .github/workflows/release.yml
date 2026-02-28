@@ -4,13 +4,77 @@ on:
   push:
     tags:
       - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to release (e.g. 0.5.2)"
+        required: true
+      prerelease:
+        description: "Pre-release suffix (e.g. rc1). Leave empty for stable."
+        required: false
 
 concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
+  tag:
+    name: Create Tag
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Validate version format
+        run: |
+          VERSION="${{ github.event.inputs.version }}"
+          if ! echo "$VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "FAIL: version must be semver (e.g. 0.5.2), got: $VERSION"
+            exit 1
+          fi
+
+      - name: Ensure running on main
+        run: |
+          BRANCH="${{ github.ref_name }}"
+          if [ "$BRANCH" != "main" ]; then
+            echo "FAIL: releases must be cut from main, got: $BRANCH"
+            exit 1
+          fi
+
+      - name: Build tag name
+        id: tag
+        run: |
+          VERSION="v${{ github.event.inputs.version }}"
+          SUFFIX="${{ github.event.inputs.prerelease }}"
+          if [ -n "$SUFFIX" ]; then
+            VERSION="${VERSION}-${SUFFIX}"
+          fi
+          echo "tag=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Tagging as $VERSION"
+
+      - name: Ensure tag does not already exist
+        run: |
+          TAG="${{ steps.tag.outputs.tag }}"
+          if git rev-parse "$TAG" >/dev/null 2>&1; then
+            echo "FAIL: tag $TAG already exists"
+            exit 1
+          fi
+
+      - name: Create and push tag
+        run: |
+          git tag "${{ steps.tag.outputs.tag }}"
+          git push origin "${{ steps.tag.outputs.tag }}"
+
   goreleaser:
+    name: Build & Publish
+    needs: [tag]
+    if: always() && (needs.tag.result == 'success' || needs.tag.result == 'skipped')
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -18,6 +82,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          ref: ${{ needs.tag.outputs.tag || github.ref }}
 
       - uses: actions/setup-go@v5
         with:
@@ -33,14 +98,24 @@ jobs:
 
   smoke-test:
     name: Release Smoke Test
-    needs: goreleaser
+    needs: [tag, goreleaser]
+    if: always() && needs.goreleaser.result == 'success'
     runs-on: ubuntu-latest
     steps:
+      - name: Resolve tag
+        id: resolve
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "tag=${{ needs.tag.outputs.tag }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Download and verify binary
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          TAG="${GITHUB_REF#refs/tags/}"
+          TAG="${{ steps.resolve.outputs.tag }}"
           ASSET="intentra_${TAG#v}_linux_amd64.tar.gz"
           gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern "$ASSET"
           tar xzf "$ASSET"
