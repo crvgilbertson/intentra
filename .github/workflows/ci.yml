@@ -29,6 +29,22 @@ jobs:
       - name: Vet
         run: go vet ./...
 
+  version:
+    name: Version Injection
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+
+      - name: Build with ldflags version injection
+        run: |
+          go build -ldflags "-X github.com/crvgilbertson/intentra/internal.Version=ci-test" -o intentra .
+          ./intentra --version | grep -q "ci-test" || { echo "FAIL: --version did not contain injected value"; exit 1; }
+          echo "Version injection verified."
+
   boundaries:
     name: Architecture Boundaries
     runs-on: ubuntu-latest
