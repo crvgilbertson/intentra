@@ -108,16 +108,13 @@ func main() {
 	}
 
 	out := filepath.Join("testdata", "snapshots", "v0.5", "regression.json")
-	out2 := filepath.Join("engine", "planners", "testdata", "snapshots", "v0.5", "regression.json")
-	for _, p := range []string{out, out2} {
-		if err := os.MkdirAll(filepath.Dir(p), 0755); err != nil {
-			fmt.Fprintf(os.Stderr, "mkdir %s: %v\n", p, err)
-			os.Exit(1)
-		}
-		if err := os.WriteFile(p, data, 0644); err != nil {
-			fmt.Fprintf(os.Stderr, "write %s: %v\n", p, err)
-			os.Exit(1)
-		}
-		fmt.Printf("wrote %s\n", p)
+	if err := os.MkdirAll(filepath.Dir(out), 0755); err != nil {
+		fmt.Fprintf(os.Stderr, "mkdir: %v\n", err)
+		os.Exit(1)
 	}
+	if err := os.WriteFile(out, data, 0644); err != nil {
+		fmt.Fprintf(os.Stderr, "write: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Printf("wrote %s\n", out)
 }
