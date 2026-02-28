@@ -73,15 +73,36 @@ A deterministic, AI-powered code change reasoning engine. Intentra analyzes your
 
 ## Installation
 
+### macOS (Homebrew)
+
 ```bash
-go install github.com/crvgilbertson/intentra@latest
+brew tap crvgilbertson/intentra
+brew install intentra
 ```
 
-Or build from source:
+### Go
+
+```bash
+go install github.com/crvgilbertson/intentra@v0.5.0
+```
+
+> **Note:** Pin to a specific version (e.g. `@v0.5.0`) rather than `@latest`. Version matters for infra tools.
+
+### Download Binary
+
+Download prebuilt binaries for Linux, macOS, and Windows from [GitHub Releases](https://github.com/crvgilbertson/intentra/releases).
+
+### Build from Source
 
 ```bash
 git clone https://github.com/crvgilbertson/intentra.git && cd intentra
 go build -o intentra .
+```
+
+Verify installation:
+
+```bash
+intentra --version
 ```
 
 ---
