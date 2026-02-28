@@ -10,6 +10,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/crvgilbertson/intentra/engine/atomicity"
 	enginectx "github.com/crvgilbertson/intentra/engine/context"
 	"github.com/crvgilbertson/intentra/engine/models"
 	"github.com/crvgilbertson/intentra/engine/planners"
@@ -44,9 +45,14 @@ type diagnosticReport struct {
 	Timeout       int               `json:"timeout_seconds"`
 	MaxRetries    int               `json:"max_retries"`
 	StrictMode    bool              `json:"strict_mode"`
-	MaxCommits    int               `json:"max_commits"`
-	BatchThreshold int              `json:"batch_threshold"`
-	Protected     []string          `json:"protected_branches"`
+	MaxCommits        int               `json:"max_commits"`
+	AtomicityProfile  string            `json:"atomicity_profile"`
+	EffectiveMaxCommits int             `json:"effective_max_commits"`
+	BatchThreshold    int               `json:"batch_threshold"`
+	RiskEnabled       bool              `json:"risk_enabled"`
+	RiskThresholdMedium float64         `json:"risk_threshold_medium,omitempty"`
+	RiskThresholdHigh   float64         `json:"risk_threshold_high,omitempty"`
+	Protected         []string          `json:"protected_branches"`
 	SignCommits   bool              `json:"sign_commits"`
 	SkipHooks     bool              `json:"skip_hooks"`
 	AutoPush      bool              `json:"auto_push"`
@@ -96,15 +102,22 @@ func runDoctor(cmd *cobra.Command, args []string) error {
 		MaxHunkLines:   cfg.AI.MaxHunkLines,
 		Timeout:        cfg.AI.Timeout,
 		MaxRetries:     cfg.AI.MaxRetries,
-		StrictMode:     cfg.Engine.StrictMode,
-		MaxCommits:     cfg.Engine.MaxCommits,
-		BatchThreshold: cfg.Engine.BatchThreshold,
-		Protected:      cfg.Engine.ProtectedBranches,
-		SignCommits:    cfg.Engine.SignCommits,
-		SkipHooks:      cfg.Engine.SkipHooks,
-		AutoPush:       cfg.Engine.AutoPush,
-		IgnorePatterns: cfg.Engine.IgnorePatterns,
-		Style:          cfg.Style,
+		StrictMode:         cfg.Engine.StrictMode,
+		MaxCommits:         cfg.Engine.MaxCommits,
+		AtomicityProfile:   atomicity.NormalizeProfile(cfg.Engine.Atomicity.Profile),
+		EffectiveMaxCommits: atomicity.EffectiveMaxCommits(cfg.Engine.MaxCommits, cfg.Engine.Atomicity.Profile),
+		BatchThreshold:     cfg.Engine.BatchThreshold,
+		RiskEnabled:        cfg.Engine.Risk.Enabled,
+		Protected:          cfg.Engine.ProtectedBranches,
+		SignCommits:        cfg.Engine.SignCommits,
+		SkipHooks:          cfg.Engine.SkipHooks,
+		AutoPush:           cfg.Engine.AutoPush,
+		IgnorePatterns:     cfg.Engine.IgnorePatterns,
+		Style:              cfg.Style,
+	}
+	if cfg.Engine.Risk.Enabled {
+		report.RiskThresholdMedium = cfg.Engine.Risk.MediumThreshold()
+		report.RiskThresholdHigh = cfg.Engine.Risk.HighThreshold()
 	}
 
 	report.APIKeyStatus = resolveAPIKeyStatus(cfg.AI.Provider)
@@ -210,8 +223,7 @@ func buildTrustSurface(provider string, maxHunkLines int) trustInfo {
 		},
 		Caching: []string{
 			"Plan cached to .intentra/plan.json after generation",
-			"Cache keyed by SHA256 of sorted hunk IDs (diff fingerprint)",
-			"Cache reused when fingerprint matches; discarded when stale",
+			"Cache keyed by diff fingerprint; stale when diff, prompt fingerprint, schema version, or atomicity profile changes",
 			"Cache deleted after successful apply",
 		},
 	}
@@ -239,7 +251,14 @@ func printDiagnosticText(r diagnosticReport, diffErr error) {
 	kv("Max Retries", fmt.Sprintf("%d", r.MaxRetries))
 	kv("Strict Mode", fmt.Sprintf("%v", r.StrictMode))
 	kv("Max Commits", fmt.Sprintf("%d", r.MaxCommits))
+	kv("Atomicity Profile", r.AtomicityProfile)
+	kv("Effective Max Commits", fmt.Sprintf("%d", r.EffectiveMaxCommits))
 	kv("Batch Threshold", fmt.Sprintf("%d", r.BatchThreshold))
+	kv("Risk Enabled", fmt.Sprintf("%v", r.RiskEnabled))
+	if r.RiskEnabled {
+		kv("Risk Threshold Medium", fmt.Sprintf("%.2f", r.RiskThresholdMedium))
+		kv("Risk Threshold High", fmt.Sprintf("%.2f", r.RiskThresholdHigh))
+	}
 	kv("Protected", strings.Join(r.Protected, ", "))
 	kv("Sign Commits", fmt.Sprintf("%v", r.SignCommits))
 	kv("Skip Hooks", fmt.Sprintf("%v", r.SkipHooks))
