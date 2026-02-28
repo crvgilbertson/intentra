@@ -83,10 +83,10 @@ brew install intentra
 ### Go
 
 ```bash
-go install github.com/crvgilbertson/intentra@v0.5.2
+go install github.com/crvgilbertson/intentra@v0.5.3
 ```
 
-> **Note:** Pin to a specific version (e.g. `@v0.5.2`) rather than `@latest`. Version matters for infra tools.
+> **Note:** Pin to a specific version (e.g. `@v0.5.3`) rather than `@latest`. Version matters for infra tools.
 
 ### Download Binary
 
@@ -162,7 +162,7 @@ Found 7 hunk(s) across the diff.
 
   ┌─────────────────────────────────────────────────────┐
   │ Commit Plan  3 commit(s)
-  │ base: e4a91bc3d1f2  •  engine v0.5.2
+  │ base: e4a91bc3d1f2  •  engine v0.5.3
   └─────────────────────────────────────────────────────┘
 
   1 feat(auth): add JWT token validation and refresh logic
