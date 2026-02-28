@@ -30,3 +30,23 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           HOMEBREW_TAP_GITHUB_TOKEN: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}
+
+  smoke-test:
+    name: Release Smoke Test
+    needs: goreleaser
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download and verify binary
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${GITHUB_REF#refs/tags/}"
+          ASSET="intentra_${TAG#v}_linux_amd64.tar.gz"
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern "$ASSET"
+          tar xzf "$ASSET"
+          REPORTED=$(./intentra --version 2>&1)
+          if ! echo "$REPORTED" | grep -q "${TAG#v}"; then
+            echo "FAIL: expected version ${TAG#v}, got: $REPORTED"
+            exit 1
+          fi
+          echo "Smoke test passed: $REPORTED"

@@ -856,22 +856,6 @@ func buildMessagingInput(ec enginectx.EngineContext, clustering ClusteringRespon
 // Validation
 // ---------------------------------------------------------------------------
 
-// validateClusteringHardErrors checks for unknown hunks only (kept for tests).
-func validateClusteringHardErrors(cr ClusteringResponse, hunks []models.Hunk) error {
-	expected := make(map[string]bool)
-	for _, h := range hunks {
-		expected[h.HunkID] = true
-	}
-	for _, g := range cr.Groups {
-		for _, hid := range g.HunkIDs {
-			if !expected[hid] {
-				return fmt.Errorf("unknown hunk_id %q in group %s", hid, g.ID)
-			}
-		}
-	}
-	return nil
-}
-
 // consolidateSingleFileGroups merges groups that exclusively contain hunks
 // from the same file. If g1 only touches README.md and g3 only touches
 // README.md, they become one group. Groups touching multiple files are left

@@ -5,6 +5,27 @@ All notable changes to Intentra are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.2] -- Release Infrastructure
+
+### Added
+- GoReleaser config for cross-platform binaries (Linux, macOS, Windows × amd64/arm64)
+- Tag-triggered release workflow with smoke test
+- Manual tag workflow (`workflow_dispatch`) with semver validation and branch/duplicate guards
+- Homebrew tap distribution via `crvgilbertson/homebrew-intentra`
+- Version injection via ldflags (no manual version bumps)
+- `golangci-lint` in CI
+- `govulncheck` security scanning (on push/PR + weekly schedule)
+- Dependabot for Go modules and GitHub Actions
+- Concurrency guard on release workflow
+
+### Changed
+- Consolidated CI from 4 jobs to 1 (same checks, lower minutes usage)
+- Homebrew tap auto-skips pre-release tags (`skip_upload: auto`)
+
+### Fixed
+- `os.MkdirAll` unchecked return values in `git_executor_test.go` (errcheck)
+- Removed unused `validateClusteringHardErrors` function
+
 ## [0.5.0] -- Import Graph, Risk, Atomicity & Plan --analyze
 
 ### Added
