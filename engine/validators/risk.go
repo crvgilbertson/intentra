@@ -41,6 +41,10 @@ func ScoreCommitRisk(c models.CommitUnit, hunkToFile map[string]string, cfg conf
 	sort.Strings(areas)
 	sort.Strings(signals)
 
+	if score == 0 {
+		return nil
+	}
+
 	// Normalize score to 0..1 (cap at 1.0)
 	if score > 1.0 {
 		score = 1.0
