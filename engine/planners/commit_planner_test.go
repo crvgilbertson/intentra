@@ -823,13 +823,17 @@ func TestSnapshotRegression(t *testing.T) {
 	}
 }
 
-// TestReplayFixtureV05 loads the v0.5 fixture, replays with mock, and verifies
-// structural equivalence. Ensures CI fixture replay passes (v0.5 gates).
+// v05FixturePath returns the canonical path to the v0.5 regression fixture.
+// Canonical location: testdata/snapshots/v0.5/regression.json at repo root.
+func v05FixturePath() string {
+	// From engine/planners, repo root is ../..
+	return filepath.Join("..", "..", "testdata", "snapshots", "v0.5", "regression.json")
+}
+
+// TestReplayFixtureV05 loads the canonical v0.5 fixture (testdata/snapshots/v0.5/regression.json),
+// replays with mock, and verifies structural equivalence. Ensures CI fixture replay passes.
 func TestReplayFixtureV05(t *testing.T) {
-	fixturePath := filepath.Join("testdata", "snapshots", "v0.5", "regression.json")
-	if _, err := os.Stat(fixturePath); err != nil {
-		fixturePath = filepath.Join("..", "..", "testdata", "snapshots", "v0.5", "regression.json")
-	}
+	fixturePath := v05FixturePath()
 	data, err := os.ReadFile(fixturePath)
 	if err != nil {
 		t.Skipf("fixture not found (run 'go run scripts/gen-fixture.go'): %v", err)
