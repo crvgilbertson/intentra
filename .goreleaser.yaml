@@ -36,6 +36,7 @@ brews:
       owner: crvgilbertson
       name: homebrew-intentra
       token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
+    skip_upload: auto
     commit_author:
       name: goreleaser
       email: goreleaser@users.noreply.github.com
