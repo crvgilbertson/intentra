@@ -5,6 +5,39 @@ All notable changes to Intentra are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] -- Import Graph, Risk, Atomicity & Plan --analyze
+
+### Added
+
+**Import-Graph Dependency Ordering**
+- `BuildImportGraph` and `OrderCommitsByImportGraph` use `go list -json ./...` to derive package layers
+- Planner tries import-graph ordering first; falls back to directory heuristics when not in a Go repo
+- `PipelineTrace.OrderingStrategy` records `import_graph` or `fallback`
+- `engine/context/import_graph.go` with `BuildImportGraph`, `OrderCommitsByImportGraph`, `computePackageLayers`
+
+**Deterministic Risk Scoring**
+- `engine.risk` config: `enabled`, `areas` (map of patterns + weight), `threshold_medium`, `threshold_high`
+- `CommitUnit.Risk`: score, level, areas, signals
+- `validators.ScoreCommitRisk` matches file paths to glob/prefix patterns for deterministic risk per commit
+
+**Atomicity Profiles** (v0.5 = commit count policy; v0.6+ will add deterministic merge/split normalization)
+- `engine.atomicity.profile`: `cohesive` (fewer commits), `balanced` (default), `strict` (more commits)
+- `engine/atomicity/policy.go`: `EffectiveMaxCommits` adjusts max-commits cap per profile
+- Cache invalidation when atomicity profile changes
+- `explain` and snapshots include `atomicity_profile`
+
+**Plan --analyze**
+- `intentra plan --analyze`: detailed per-commit diagnostics (hunks, files, rationale, risk)
+- `--analyze --json` for structured output
+
+**Replay Fixture Corpus**
+- Canonical fixture at `testdata/snapshots/v0.5/regression.json` (run `go run scripts/gen-fixture.go` to regenerate)
+- `TestReplayFixtureV05` loads from repo root and verifies structural equivalence with mock replay
+
+### Changed
+- Snapshot config includes `atomicity_profile` for replay equivalence
+- `apply` rejects cached plan when atomicity profile changes (no `--allow-stale-prompts` override)
+
 ## [0.4.0] -- Deterministic Replay & Confidence System
 
 ### Added

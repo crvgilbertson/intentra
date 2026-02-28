@@ -43,11 +43,11 @@ A deterministic, AI-powered code change reasoning engine. Intentra analyzes your
 
 3. **Messaging** -- For each cluster, the LLM generates Conventional Commit metadata: type, scope, subject, body, breaking change flags, and footers. All output is schema-validated. Both passes support configurable retries with correction prompts.
 
-4. **Ordering** -- Commits are reordered by dependency: foundational changes (models, types, interfaces) are applied before higher-level consumers (planners, validators, CLI). This ensures the repository compiles at every commit boundary.
+4. **Ordering** -- Commits are reordered by dependency: foundational changes (models, types, interfaces) are applied before higher-level consumers (planners, validators, CLI). In Go repositories, Intentra uses the actual import graph (`go list -json ./...`) when available; otherwise it falls back to directory heuristics. This ensures the repository compiles at every commit boundary.
 
-5. **Validation** -- The resulting `CommitPlan` is validated against business rules: every hunk is assigned exactly once, commit types and scopes are from the allowed set, subject length is within limits, breaking changes have proper footers, and more. A confidence system decomposes plan quality into five deterministic components (`coverage`, `entanglement`, `repair_activity`, `overlap`, `reorder_penalty`) and produces an overall score. Configurable profiles (`strict`, `balanced`, `permissive`) control whether low confidence blocks apply.
+5. **Validation** -- The resulting `CommitPlan` is validated against business rules: every hunk is assigned exactly once, commit types and scopes are from the allowed set, subject length is within limits, breaking changes have proper footers, and more. A confidence system decomposes plan quality into five deterministic components (`coverage`, `entanglement`, `repair_activity`, `overlap`, `reorder_penalty`) and produces an overall score. Optional risk scoring (`engine.risk`) assigns deterministic risk levels per commit based on file patterns (e.g., auth, database). Configurable profiles (`strict`, `balanced`, `permissive`) control whether low confidence blocks apply.
 
-6. **Caching** -- The validated plan is saved to `.intentra/plan.json` with a diff fingerprint (SHA256 of all hunk IDs) and a prompt fingerprint (SHA256 of all prompt templates). If you run `apply` without changing your working tree or prompts, the cached plan is reused instantly -- no second LLM call. If the diff changes, the prompt fingerprint changes, or the schema version changes, the stale plan is automatically invalidated and a fresh one is generated. The `--allow-stale-prompts` flag on apply can override prompt staleness for power users.
+6. **Caching** -- The validated plan is saved to `.intentra/plan.json` with a diff fingerprint (SHA256 of all hunk IDs) and a prompt fingerprint (SHA256 of all prompt templates). If you run `apply` without changing your working tree, prompts, schema, or atomicity profile, the cached plan is reused instantly -- no second LLM call. If any of these change, the stale plan is automatically invalidated and a fresh one is generated. The `--allow-stale-prompts` flag on apply can override prompt staleness for power users (but not atomicity profile changes).
 
 7. **Execution** -- Only when you explicitly pass `--yes` does Intentra touch git. It snapshots the current HEAD and index, resets to a clean state, then validates each patch with `git apply --check` before staging with `git apply --cached` and committing. Between commits, working tree files are fingerprinted (OS-level mtime/size) to detect external modifications. If anything fails -- or if you press Ctrl+C -- all commits are rolled back and the index is restored to its pre-apply state. No partial applies. No data corruption.
 
@@ -141,7 +141,7 @@ Found 7 hunk(s) across the diff.
 
   ┌─────────────────────────────────────────────────────┐
   │ Commit Plan  3 commit(s)
-  │ base: e4a91bc3d1f2  •  engine v0.4.0
+  │ base: e4a91bc3d1f2  •  engine v0.5.0
   └─────────────────────────────────────────────────────┘
 
   1 feat(auth): add JWT token validation and refresh logic
@@ -190,7 +190,7 @@ $ intentra plan --json
 ```json
 {
   "schema_version": "v1",
-  "tool_version": "0.4.0",
+  "tool_version": "0.5.0",
   "base_ref": "e4a91bc",
   "diff_fingerprint": "3a7f2b1c9d4e8f0a...",
   "prompt_fingerprint": "b4d9e1f2a7c83056...",
@@ -225,6 +225,8 @@ $ intentra plan --json
   },
   "trace": {
     "strategy": "direct",
+    "ordering_strategy": "import_graph",
+    "atomicity_profile": "balanced",
     "dedup_count": 0,
     "orphan_count": 0,
     "rescue_attempted": false,
@@ -281,11 +283,14 @@ Usage:
   intentra plan [flags]
 
 Flags:
-      --json               Output raw CommitPlan JSON instead of human-readable summary
+      --analyze             Output detailed per-commit diagnostics (hunks, files, rationale, risk)
+      --json                Output raw CommitPlan JSON instead of human-readable summary
       --snapshot string     Export reproducible plan snapshot to file
 ```
 
 **Snapshot export** (`--snapshot`): writes a self-contained JSON bundle including engine version, schema version, prompt fingerprint, provider/model, full config, diff fingerprint, hunk metadata (with patches), normalized plan, confidence breakdown, pipeline trace, and timestamp. The plan is also saved to the normal cache. Snapshots are used with `intentra replay` for deterministic drift detection.
+
+**Per-commit diagnostics** (`--analyze`): after generating the plan, outputs detailed per-commit diagnostics — hunks, files, rationale, and risk (when enabled). Use `--analyze --json` for structured output. Useful for reviewing high-risk areas or auditing the planner's groupings.
 
 ### `intentra apply`
 
@@ -307,9 +312,10 @@ Flags:
 - If the file exists but the diff has changed: `Cached plan is stale (diff changed). Re-planning...`
 - If the diff matches but prompt fingerprint changed: `Cached plan is stale (prompt fingerprint changed). Re-planning...`
 - If the diff matches but schema version changed: `Cached plan is stale (schema version changed). Schema changes require a replan.`
+- If the diff matches but atomicity profile changed: `Cached plan is stale (atomicity profile changed). Re-planning...`
 - If no cached plan exists: `No cached plan found.`
 
-Schema version changes always force a replan. Prompt fingerprint changes can be overridden with `--allow-stale-prompts`.
+Schema version changes always force a replan. Prompt fingerprint changes can be overridden with `--allow-stale-prompts`. Atomicity profile changes always force a replan.
 
 **Confidence profiles:** The confidence threshold for blocking apply is configurable via `engine.confidence.profile`:
 
@@ -376,7 +382,7 @@ Flags:
 
 - **Clustering**: strategy used (direct/file_level/batched), commit count, per-commit rationale from the clustering LLM call
 - **Repair Heuristics**: dedup count, orphan count, whether rescue was attempted/succeeded, repair count if fallback was used
-- **Dependency Ordering**: whether reorder was applied
+- **Dependency Ordering**: ordering strategy (import_graph or fallback), atomicity profile, whether reorder was applied
 - **Confidence**: overall score and level, plus all five component scores
 
 ### `intentra push`
@@ -515,8 +521,13 @@ engine:
     commit_author: ""
     skip_hooks: false
     batch_threshold: 40
+    atomicity:
+        profile: balanced
     confidence:
         profile: balanced
+    risk:
+        enabled: false
+        areas: {}
 ```
 
 ### Configuration Reference
@@ -538,7 +549,7 @@ engine:
 | `ai` | `timeout` | int | `120` | Timeout in seconds for the entire planning phase |
 | `ai` | `max_hunk_lines` | int | `50` | Truncate patches longer than this in the clustering prompt (0 = no truncation). Reduces token usage on large diffs. |
 | `engine` | `strict_mode` | bool | `true` | Enable strict validation |
-| `engine` | `protected_branches` | []string | `[main, master]` | Branches that `apply --yes` refuses to commit to |
+| `engine` | `protected_branches` | []string | `[main, master]` | Branches that `apply --yes` refuses to commit to. To allow apply to all branches (including main), set to an empty list: `protected_branches: []`. Commenting out the key leaves the default in place. |
 | `engine` | `max_commits` | int | `20` | Maximum number of commits per plan |
 | `engine` | `ignore_patterns` | []string | `[]` | File glob patterns to exclude from the diff |
 | `engine` | `sign_commits` | bool | `false` | GPG-sign commits with `git commit -S` |
@@ -547,7 +558,10 @@ engine:
 | `engine` | `commit_author` | string | `""` | Override commit author (e.g., `"Name <email>"`) — empty uses git default |
 | `engine` | `skip_hooks` | bool | `false` | Skip pre-commit hooks with `--no-verify` |
 | `engine` | `batch_threshold` | int | `40` | Hunk/file-unit count above which clustering switches strategy (file-level grouping, then batched clustering). See [Scaling for Large Diffs](#scaling-for-large-diffs). |
+| `engine.atomicity` | `profile` | string | `balanced` | Atomicity profile (v0.5 = commit count policy): `cohesive` (fewer commits), `balanced` (default), `strict` (more commits). Affects effective max_commits; cache invalidated when profile changes. v0.6+ will add deterministic merge/split normalization. |
 | `engine.confidence` | `profile` | string | `balanced` | Confidence profile: `strict` (block < 90%), `balanced` (block < 75%), `permissive` (warn only) |
+| `engine.risk` | `enabled` | bool | `false` | Enable deterministic risk scoring per commit |
+| `engine.risk` | `areas` | map | `{}` | Risk areas: pattern → weight (e.g. `auth: {patterns: ["auth/"], weight: 0.4}`) |
 
 If no config file is found, Intentra uses these defaults automatically.
 
@@ -706,7 +720,7 @@ Both passes use the generic `CallWithRetry[T]` mechanism: if the LLM output fail
 
 **Post-Processing -- Dependency Ordering**
 
-After the LLM produces the plan, commits are deterministically reordered by package dependency. Each commit's hunks are inspected to determine which layer of the codebase they touch (models → context → reasoning → planners → validators → executors → cmd). Commits touching foundational layers are applied first, ensuring the repository compiles at every commit boundary. This is a pure, deterministic step -- no LLM involved.
+After the LLM produces the plan, commits are deterministically reordered by package dependency. In Go repositories, Intentra builds an import graph via `go list -json ./...` and orders commits by package layers (foundational packages first). If the import graph is unavailable (e.g., not a Go repo), it falls back to directory heuristics (models → context → reasoning → planners → validators → executors → cmd). The trace records `ordering_strategy` (import_graph or fallback). This is a pure, deterministic step -- no LLM involved.
 
 ### Scaling for Large Diffs
 
@@ -788,7 +802,12 @@ intentra/
     │   ├── diff_parser_fuzz_test.go  Fuzz tests for diff parsing edge cases
     │   ├── hunk_hasher.go           sha256-based stable hunk IDs
     │   ├── hunk_hasher_test.go
+    │   ├── import_graph.go          BuildImportGraph(), OrderCommitsByImportGraph (go list)
     │   └── repo_context.go          BuildContext(): git diff HEAD + untracked + ignore filtering
+    │
+    ├── atomicity/                   Atomicity profiles (cohesive/balanced/strict)
+    │   ├── policy.go                EffectiveMaxCommits per profile
+    │   └── normalize.go             NormalizeProfile()
     │
     ├── models/                      Shared domain types (no logic)
     │   ├── hunk.go                  Hunk { HunkID, FilePath, Header, Patch, NewFile, DeletedFile, ... }
@@ -813,7 +832,9 @@ intentra/
     │   ├── commit_validator.go      ValidateCommitPlan(), WarnFileOverlap()
     │   ├── commit_validator_test.go
     │   ├── confidence.go            Decomposed confidence scoring (5 components, trace-aware)
-    │   └── confidence_test.go
+    │   ├── confidence_test.go
+    │   ├── risk.go                  ScoreCommitRisk (deterministic risk per commit)
+    │   └── risk_test.go
     │
     └── executors/                   Git operations (NO LLM calls)
         ├── executor.go              Executor interface
@@ -1024,19 +1045,19 @@ Theme: *Reproducibility over new features*
 - Replay regression tests in CI: snapshot round-trip, structural comparison, explain report
 - Locks prompt + repair + ordering behavior
 
-### v0.5.0 -- Commit Intelligence Layer
+### v0.5.0 -- Import Graph, Risk, Atomicity & Plan --analyze (Released)
 
 Theme: *Engine deepening, not surface growth*
 
-- **Import-graph analysis**: replace directory-name heuristics with actual Go import graph for commit dependency ordering
-- **Commit risk scoring**: per-commit risk assessment for sensitive areas (auth, database, payments, config)
-- **`intentra plan --analyze`**: detailed per-commit diagnostics
-- **Confidence-aware grouping refinements**: planner uses confidence signals to improve clustering decisions
-- **Optional telemetry**: opt-in metadata collection only (no code content) for prompt and heuristic tuning
-- No new workflow commands added in this phase
+- **Import-graph ordering**: in Go repos, use `go list -json ./...` for actual package layers; fall back to directory heuristics otherwise. Trace records `ordering_strategy` (import_graph or fallback).
+- **Deterministic risk scoring**: per-commit risk based on file patterns (`engine.risk.areas`). Optional, configurable thresholds.
+- **Atomicity profiles** (v0.5 = commit count policy): `engine.atomicity.profile` — cohesive (fewer commits), balanced (default), strict (more commits). Affects effective max_commits; cache invalidated when profile changes. v0.6+ will add deterministic merge/split normalization for a true granularity dial.
+- **`intentra plan --analyze`**: detailed per-commit diagnostics (hunks, files, rationale, risk). Use `--analyze --json` for structured output.
+- **Replay fixture corpus**: `testdata/snapshots/v0.5/` fixtures with CI enforcement.
 
 ### v0.6.0 -- PR & Shipping Intelligence (Capability Modules)
 
+- **Atomicity merge/split normalization**: deterministic post-cluster pass to merge or split commits based on profile (extends v0.5 commit-count policy into a true granularity dial)
 - **`intentra ship`**: single-command workflow — branch creation, apply, push, PR creation, rollback branch on failure
 - **AI-driven PR splitting** (`--split`): when a diff has unrelated concerns, propose and execute separate PRs
 - **Configurable branch templates**: template-based naming convention in config (e.g., `{type}/{ticket}/{summary}`)

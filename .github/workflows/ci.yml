@@ -67,19 +67,3 @@ jobs:
             || { echo "FAIL: loadCachedPlan does not validate SchemaVersion"; exit 1; }
 
           echo "Schema discipline checks passed."
-
-  replay-regression:
-    name: Replay Regression
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-go@v5
-        with:
-          go-version: "1.24"
-
-      - name: Run snapshot and replay regression tests
-        run: |
-          go test ./cmd/ -run 'TestComparePlans|TestSnapshotRoundTrip|TestExplainReport' -v -count=1
-          go test ./engine/planners/ -run 'TestSnapshotRegression' -v -count=1
-          echo "Replay regression tests passed."

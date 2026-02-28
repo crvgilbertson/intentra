@@ -10,6 +10,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/crvgilbertson/intentra/engine/atomicity"
 	enginectx "github.com/crvgilbertson/intentra/engine/context"
 	"github.com/crvgilbertson/intentra/engine/executors"
 	"github.com/crvgilbertson/intentra/engine/models"
@@ -149,6 +150,7 @@ func runApply(cmd *cobra.Command, args []string) error {
 func resolveCommitPlan(ctx context.Context, ec *enginectx.EngineContext) (*models.CommitPlan, error) {
 	currentFingerprint := models.DiffFingerprintFromHunks(ec.Hunks)
 	currentPrompts := planners.PromptFingerprint()
+	currentAtomicity := atomicityProfile()
 
 	cached, err := loadCachedPlan()
 	if err == nil && cached.DiffFingerprint == currentFingerprint {
@@ -156,6 +158,8 @@ func resolveCommitPlan(ctx context.Context, ec *enginectx.EngineContext) (*model
 
 		schemaStale := cached.SchemaVersion != "" && cached.SchemaVersion != models.CurrentSchemaVersion
 		promptStale := cached.PromptFingerprint != "" && cached.PromptFingerprint != currentPrompts
+		atomicityStale := cached.Trace != nil && cached.Trace.AtomicityProfile != "" &&
+			cached.Trace.AtomicityProfile != currentAtomicity
 
 		if schemaStale {
 			staleReasons = append(staleReasons, "schema version changed")
@@ -163,15 +167,20 @@ func resolveCommitPlan(ctx context.Context, ec *enginectx.EngineContext) (*model
 		if promptStale {
 			staleReasons = append(staleReasons, "prompt fingerprint changed")
 		}
+		if atomicityStale {
+			staleReasons = append(staleReasons, "atomicity profile changed")
+		}
 
 		if len(staleReasons) > 0 {
 			reason := strings.Join(staleReasons, ", ")
 
 			if schemaStale {
 				ui.Warn("Cached plan is stale (%s). Schema changes require a replan.\n", reason)
-			} else if allowStalePrompts {
+			} else if allowStalePrompts && !atomicityStale {
 				ui.Warn("Cached plan is stale (%s) but --allow-stale-prompts was passed. Reusing.\n", reason)
 				return cached, nil
+			} else if atomicityStale {
+				ui.Warn("Cached plan is stale (%s). Re-planning...\n", reason)
 			} else {
 				ui.Warn("Cached plan is stale (%s). Re-planning...\n", reason)
 			}
@@ -234,6 +243,10 @@ func confidenceProfileName() string {
 		return "balanced"
 	}
 	return p
+}
+
+func atomicityProfile() string {
+	return atomicity.NormalizeProfile(cfg.Engine.Atomicity.Profile)
 }
 
 func checkProtectedBranch() error {

@@ -31,6 +31,36 @@ type AIConfig struct {
 	MaxHunkLines int     `yaml:"max_hunk_lines"`
 }
 
+type RiskAreaRule struct {
+	Patterns []string `yaml:"patterns"`
+	Weight   float64  `yaml:"weight"`
+}
+
+type RiskConfig struct {
+	Enabled     bool                    `yaml:"enabled"`
+	Areas       map[string]RiskAreaRule `yaml:"areas,omitempty"`
+	ThresholdMedium float64             `yaml:"threshold_medium,omitempty"`
+	ThresholdHigh   float64             `yaml:"threshold_high,omitempty"`
+}
+
+func (r RiskConfig) MediumThreshold() float64 {
+	if r.ThresholdMedium > 0 {
+		return r.ThresholdMedium
+	}
+	return 0.3
+}
+
+func (r RiskConfig) HighThreshold() float64 {
+	if r.ThresholdHigh > 0 {
+		return r.ThresholdHigh
+	}
+	return 0.6
+}
+
+type AtomicityConfig struct {
+	Profile string `yaml:"profile,omitempty"` // "cohesive", "balanced", "strict"
+}
+
 type ConfidenceConfig struct {
 	Profile string `yaml:"profile,omitempty"` // "strict", "balanced", "permissive"
 }
@@ -61,7 +91,9 @@ type EngineSettings struct {
 	CommitAuthor      string           `yaml:"commit_author,omitempty"`
 	SkipHooks         bool             `yaml:"skip_hooks"`
 	BatchThreshold    int              `yaml:"batch_threshold"`
+	Atomicity         AtomicityConfig  `yaml:"atomicity,omitempty"`
 	Confidence        ConfidenceConfig `yaml:"confidence,omitempty"`
+	Risk              RiskConfig       `yaml:"risk,omitempty"`
 }
 
 type EngineConfig struct {

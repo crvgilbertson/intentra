@@ -35,13 +35,14 @@ func HunkMetaFromHunk(h Hunk) HunkMeta {
 }
 
 type SnapshotConfig struct {
-	Provider     string  `json:"provider"`
-	Model        string  `json:"model"`
-	Temperature  float64 `json:"temperature"`
-	MaxCommits   int     `json:"max_commits"`
-	MaxHunkLines int     `json:"max_hunk_lines"`
-	BatchThreshold int   `json:"batch_threshold"`
-	Style        CommitStyle `json:"style"`
+	Provider        string       `json:"provider"`
+	Model           string       `json:"model"`
+	Temperature     float64      `json:"temperature"`
+	MaxCommits      int          `json:"max_commits"`
+	MaxHunkLines    int          `json:"max_hunk_lines"`
+	BatchThreshold  int          `json:"batch_threshold"`
+	AtomicityProfile string      `json:"atomicity_profile,omitempty"`
+	Style           CommitStyle  `json:"style"`
 }
 
 type PlanSnapshot struct {

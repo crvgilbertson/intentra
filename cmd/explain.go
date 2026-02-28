@@ -53,9 +53,11 @@ type repairExplain struct {
 }
 
 type orderingExplain struct {
-	ReorderApplied bool `json:"reorder_applied"`
-	CommitsBefore  int  `json:"commits_before_reorder"`
-	CommitsAfter   int  `json:"commits_after_reorder"`
+	OrderingStrategy  string `json:"ordering_strategy,omitempty"`
+	AtomicityProfile  string `json:"atomicity_profile,omitempty"`
+	ReorderApplied    bool   `json:"reorder_applied"`
+	CommitsBefore     int    `json:"commits_before_reorder"`
+	CommitsAfter      int    `json:"commits_after_reorder"`
 }
 
 type confidenceExplain struct {
@@ -110,9 +112,11 @@ func buildExplainReport(cp *models.CommitPlan) explainReport {
 			RepairCount:     cp.Trace.RepairCount,
 		}
 		report.Ordering = orderingExplain{
-			ReorderApplied: cp.Trace.ReorderApplied,
-			CommitsBefore:  cp.Trace.CommitsBefore,
-			CommitsAfter:   cp.Trace.CommitsAfter,
+			OrderingStrategy:  cp.Trace.OrderingStrategy,
+			AtomicityProfile:  cp.Trace.AtomicityProfile,
+			ReorderApplied:    cp.Trace.ReorderApplied,
+			CommitsBefore:     cp.Trace.CommitsBefore,
+			CommitsAfter:      cp.Trace.CommitsAfter,
 		}
 	}
 
@@ -164,6 +168,12 @@ func printExplainText(r explainReport) {
 	}
 
 	section("Dependency Ordering")
+	if r.Ordering.OrderingStrategy != "" {
+		fmt.Printf("    strategy:     %s\n", r.Ordering.OrderingStrategy)
+	}
+	if r.Ordering.AtomicityProfile != "" {
+		fmt.Printf("    atomicity:    %s\n", r.Ordering.AtomicityProfile)
+	}
 	if r.Ordering.ReorderApplied {
 		fmt.Printf("    reorder:      applied (commit order changed to match dependency layers)\n")
 	} else {

@@ -21,6 +21,13 @@ type Footer struct {
 	Value string `json:"value"`
 }
 
+type CommitRisk struct {
+	Score   float64  `json:"score"`
+	Level   string   `json:"level"`
+	Areas   []string `json:"areas,omitempty"`
+	Signals []string `json:"signals,omitempty"`
+}
+
 type CommitUnit struct {
 	ID        string   `json:"id"`
 	Type      string   `json:"type"`
@@ -31,6 +38,7 @@ type CommitUnit struct {
 	Footers   []Footer `json:"footers,omitempty"`
 	Hunks     []string `json:"hunks"`
 	Rationale string   `json:"rationale,omitempty"`
+	Risk      *CommitRisk `json:"risk,omitempty"`
 }
 
 // FullSubject returns the formatted commit subject line: type(scope): subject
@@ -59,15 +67,17 @@ type PlanConfidence struct {
 }
 
 type PipelineTrace struct {
-	Strategy        string `json:"strategy"`
-	DedupCount      int    `json:"dedup_count"`
-	OrphanCount     int    `json:"orphan_count"`
-	RescueAttempted bool   `json:"rescue_attempted"`
-	RescueSucceeded bool   `json:"rescue_succeeded"`
-	RepairCount     int    `json:"repair_count"`
-	ReorderApplied  bool   `json:"reorder_applied"`
-	CommitsBefore   int    `json:"commits_before_reorder"`
-	CommitsAfter    int    `json:"commits_after_reorder"`
+	Strategy          string `json:"strategy"`
+	OrderingStrategy  string `json:"ordering_strategy,omitempty"`
+	AtomicityProfile  string `json:"atomicity_profile,omitempty"`
+	DedupCount        int    `json:"dedup_count"`
+	OrphanCount       int    `json:"orphan_count"`
+	RescueAttempted   bool   `json:"rescue_attempted"`
+	RescueSucceeded   bool   `json:"rescue_succeeded"`
+	RepairCount       int    `json:"repair_count"`
+	ReorderApplied    bool   `json:"reorder_applied"`
+	CommitsBefore     int    `json:"commits_before_reorder"`
+	CommitsAfter      int    `json:"commits_after_reorder"`
 }
 
 type CommitPlan struct {

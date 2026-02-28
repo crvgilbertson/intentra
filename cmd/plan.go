@@ -5,12 +5,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
 
 	"github.com/crvgilbertson/intentra/cmd/ui"
 	"github.com/crvgilbertson/intentra/config"
+	"github.com/crvgilbertson/intentra/engine/atomicity"
 	enginectx "github.com/crvgilbertson/intentra/engine/context"
 	"github.com/crvgilbertson/intentra/engine/models"
 	"github.com/crvgilbertson/intentra/engine/planners"
@@ -24,6 +26,7 @@ var defaultPlanFile = config.PlanPath
 var (
 	jsonOutput   bool
 	snapshotFile string
+	analyzeOutput bool
 )
 
 var planCmd = &cobra.Command{
@@ -35,6 +38,7 @@ var planCmd = &cobra.Command{
 
 func init() {
 	planCmd.Flags().BoolVar(&jsonOutput, "json", false, "output raw CommitPlan JSON")
+	planCmd.Flags().BoolVar(&analyzeOutput, "analyze", false, "output detailed per-commit diagnostics")
 	planCmd.Flags().StringVar(&snapshotFile, "snapshot", "", "export reproducible plan snapshot to file")
 	rootCmd.AddCommand(planCmd)
 }
@@ -91,6 +95,16 @@ func runPlan(cmd *cobra.Command, args []string) error {
 		Components: pc.Components,
 	}
 
+	hunkToFile := make(map[string]string, len(ec.Hunks))
+	for _, h := range ec.Hunks {
+		hunkToFile[h.HunkID] = h.FilePath
+	}
+	for i := range cp.Commits {
+		if r := validators.ScoreCommitRisk(cp.Commits[i], hunkToFile, cfg.Engine.Risk); r != nil {
+			cp.Commits[i].Risk = r
+		}
+	}
+
 	if err := savePlan(cp); err != nil {
 		ui.Warn("Warning: could not save plan cache: %v\n", err)
 	} else {
@@ -102,15 +116,27 @@ func runPlan(cmd *cobra.Command, args []string) error {
 	}
 
 	if jsonOutput {
-		data, err := json.MarshalIndent(cp, "", "  ")
-		if err != nil {
-			return fmt.Errorf("marshalling plan: %w", err)
+		if analyzeOutput {
+			data, err := json.MarshalIndent(buildAnalyzeReport(cp, ec.Hunks), "", "  ")
+			if err != nil {
+				return fmt.Errorf("marshalling analyze report: %w", err)
+			}
+			fmt.Println(string(data))
+		} else {
+			data, err := json.MarshalIndent(cp, "", "  ")
+			if err != nil {
+				return fmt.Errorf("marshalling plan: %w", err)
+			}
+			fmt.Println(string(data))
 		}
-		fmt.Println(string(data))
 		return nil
 	}
 
-	printPlanSummary(cp, ec.Hunks)
+	if analyzeOutput {
+		printAnalyzeReport(cp, ec.Hunks)
+	} else {
+		printPlanSummary(cp, ec.Hunks)
+	}
 	ui.PrintConfidence(pc.Level, pc.Score, pc.Warnings)
 	return nil
 }
@@ -146,6 +172,90 @@ func printPlanSummary(cp *models.CommitPlan, hunks []models.Hunk) {
 	ui.PrintPlanSummary(cp.ToolVersion, cp.BaseRef, commits)
 }
 
+// analyzeCommitEntry holds per-commit diagnostic data.
+type analyzeCommitEntry struct {
+	ID        string   `json:"id"`
+	Type      string   `json:"type"`
+	Subject   string   `json:"subject"`
+	HunkCount int      `json:"hunk_count"`
+	Files     []string `json:"files"`
+	Rationale string   `json:"rationale,omitempty"`
+	Risk      *struct {
+		Score float64  `json:"score"`
+		Level string   `json:"level"`
+		Areas []string `json:"areas,omitempty"`
+	} `json:"risk,omitempty"`
+}
+
+// analyzeReport is the structured output for plan --analyze.
+type analyzeReport struct {
+	Commits []analyzeCommitEntry `json:"commits"`
+	Plan    *models.CommitPlan   `json:"plan,omitempty"`
+}
+
+func buildAnalyzeReport(cp *models.CommitPlan, hunks []models.Hunk) analyzeReport {
+	hunkFileMap := make(map[string]string, len(hunks))
+	for _, h := range hunks {
+		hunkFileMap[h.HunkID] = h.FilePath
+	}
+
+	var entries []analyzeCommitEntry
+	for _, c := range cp.Commits {
+		files := uniqueFiles(c.Hunks, hunkFileMap)
+		e := analyzeCommitEntry{
+			ID:        c.ID,
+			Type:      c.Type,
+			Subject:   c.Subject,
+			HunkCount: len(c.Hunks),
+			Files:     files,
+			Rationale: c.Rationale,
+		}
+		if c.Risk != nil {
+			e.Risk = &struct {
+				Score float64  `json:"score"`
+				Level string   `json:"level"`
+				Areas []string `json:"areas,omitempty"`
+			}{
+				Score: c.Risk.Score,
+				Level: c.Risk.Level,
+				Areas: c.Risk.Areas,
+			}
+		}
+		entries = append(entries, e)
+	}
+	return analyzeReport{Commits: entries}
+}
+
+func printAnalyzeReport(cp *models.CommitPlan, hunks []models.Hunk) {
+	hunkFileMap := make(map[string]string, len(hunks))
+	for _, h := range hunks {
+		hunkFileMap[h.HunkID] = h.FilePath
+	}
+
+	printPlanSummary(cp, hunks)
+	fmt.Println()
+
+	for i, c := range cp.Commits {
+		files := uniqueFiles(c.Hunks, hunkFileMap)
+		fmt.Printf("── %s %s ──\n", c.ID, c.FullSubject())
+		fmt.Printf("  hunks:  %d\n", len(c.Hunks))
+		fmt.Printf("  files:  %s\n", strings.Join(files, ", "))
+		if c.Rationale != "" {
+			fmt.Printf("  rationale: %s\n", c.Rationale)
+		}
+		if c.Risk != nil {
+			fmt.Printf("  risk: %.2f (%s)", c.Risk.Score, c.Risk.Level)
+			if len(c.Risk.Areas) > 0 {
+				fmt.Printf(" areas=%s", strings.Join(c.Risk.Areas, ","))
+			}
+			fmt.Println()
+		}
+		if i < len(cp.Commits)-1 {
+			fmt.Println()
+		}
+	}
+}
+
 func uniqueFiles(hunkIDs []string, hunkFileMap map[string]string) []string {
 	seen := make(map[string]bool)
 	var files []string
@@ -172,13 +282,14 @@ func writeSnapshot(cp *models.CommitPlan, ec *enginectx.EngineContext) error {
 		Provider:          cfg.AI.Provider,
 		Model:             cfg.AI.Model,
 		Config: models.SnapshotConfig{
-			Provider:       cfg.AI.Provider,
-			Model:          cfg.AI.Model,
-			Temperature:    cfg.AI.Temperature,
-			MaxCommits:     cfg.Engine.MaxCommits,
-			MaxHunkLines:   cfg.AI.MaxHunkLines,
-			BatchThreshold: cfg.Engine.BatchThreshold,
-			Style:          cfg.Style,
+			Provider:          cfg.AI.Provider,
+			Model:             cfg.AI.Model,
+			Temperature:       cfg.AI.Temperature,
+			MaxCommits:        cfg.Engine.MaxCommits,
+			MaxHunkLines:      cfg.AI.MaxHunkLines,
+			BatchThreshold:    cfg.Engine.BatchThreshold,
+			AtomicityProfile:  atomicity.NormalizeProfile(cfg.Engine.Atomicity.Profile),
+			Style:             cfg.Style,
 		},
 		DiffFingerprint: cp.DiffFingerprint,
 		HunkCount:       len(ec.Hunks),
