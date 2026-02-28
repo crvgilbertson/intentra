@@ -81,5 +81,5 @@ jobs:
       - name: Run snapshot and replay regression tests
         run: |
           go test ./cmd/ -run 'TestComparePlans|TestSnapshotRoundTrip|TestExplainReport' -v -count=1
-          go test ./engine/planners/ -run 'TestSnapshotRegression' -v -count=1
+          go test ./engine/planners/ -run 'TestSnapshotRegression|TestReplayFixtureV05' -v -count=1
           echo "Replay regression tests passed."
