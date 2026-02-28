@@ -89,6 +89,12 @@ type trustInfo struct {
 func runDoctor(cmd *cobra.Command, args []string) error {
 	ctx := context.Background()
 
+	// Resolve base max_commits the same way as the planner (avoid mismatched reporting).
+	baseMax := cfg.Engine.MaxCommits
+	if baseMax <= 0 {
+		baseMax = 20
+	}
+
 	report := diagnosticReport{
 		Version:           internal.Version,
 		SchemaVersion:     models.CurrentSchemaVersion,
@@ -105,7 +111,7 @@ func runDoctor(cmd *cobra.Command, args []string) error {
 		StrictMode:         cfg.Engine.StrictMode,
 		MaxCommits:         cfg.Engine.MaxCommits,
 		AtomicityProfile:   atomicity.NormalizeProfile(cfg.Engine.Atomicity.Profile),
-		EffectiveMaxCommits: atomicity.EffectiveMaxCommits(cfg.Engine.MaxCommits, cfg.Engine.Atomicity.Profile),
+		EffectiveMaxCommits: atomicity.EffectiveMaxCommits(baseMax, cfg.Engine.Atomicity.Profile),
 		BatchThreshold:     cfg.Engine.BatchThreshold,
 		RiskEnabled:        cfg.Engine.Risk.Enabled,
 		Protected:          cfg.Engine.ProtectedBranches,
