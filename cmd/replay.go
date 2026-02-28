@@ -76,13 +76,13 @@ func runReplay(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	ec := enginectx.EngineContext{
-		BaseRef: snap.Plan.BaseRef,
-		Hunks:   hunks,
-		Config:  configFromSnapshot(snap.Config),
-	}
-
 	ctx := context.Background()
+	ec := enginectx.EngineContext{
+		BaseRef:  snap.Plan.BaseRef,
+		RootPath: enginectx.RepoRoot(ctx),
+		Hunks:    hunks,
+		Config:   configFromSnapshot(snap.Config),
+	}
 	engine, err := reasoning.NewEngineFromConfig(ec.Config.AI)
 	if err != nil {
 		return fmt.Errorf("creating reasoning engine: %w", err)
@@ -241,6 +241,9 @@ func configFromSnapshot(sc models.SnapshotConfig) cfgpkg.EngineConfig {
 	c.AI.MaxHunkLines = sc.MaxHunkLines
 	c.Engine.MaxCommits = sc.MaxCommits
 	c.Engine.BatchThreshold = sc.BatchThreshold
+	if sc.AtomicityProfile != "" {
+		c.Engine.Atomicity.Profile = sc.AtomicityProfile
+	}
 	c.Style = sc.Style
 	return c
 }
