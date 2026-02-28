@@ -20,7 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `CommitUnit.Risk`: score, level, areas, signals
 - `validators.ScoreCommitRisk` matches file paths to glob/prefix patterns for deterministic risk per commit
 
-**Atomicity Profiles**
+**Atomicity Profiles** (v0.5 = commit count policy; v0.6+ will add deterministic merge/split normalization)
 - `engine.atomicity.profile`: `cohesive` (fewer commits), `balanced` (default), `strict` (more commits)
 - `engine/atomicity/policy.go`: `EffectiveMaxCommits` adjusts max-commits cap per profile
 - Cache invalidation when atomicity profile changes

@@ -558,7 +558,7 @@ engine:
 | `engine` | `commit_author` | string | `""` | Override commit author (e.g., `"Name <email>"`) — empty uses git default |
 | `engine` | `skip_hooks` | bool | `false` | Skip pre-commit hooks with `--no-verify` |
 | `engine` | `batch_threshold` | int | `40` | Hunk/file-unit count above which clustering switches strategy (file-level grouping, then batched clustering). See [Scaling for Large Diffs](#scaling-for-large-diffs). |
-| `engine.atomicity` | `profile` | string | `balanced` | Atomicity profile: `cohesive` (fewer commits), `balanced` (default), `strict` (more commits) |
+| `engine.atomicity` | `profile` | string | `balanced` | Atomicity profile (v0.5 = commit count policy): `cohesive` (fewer commits), `balanced` (default), `strict` (more commits). Affects effective max_commits; cache invalidated when profile changes. v0.6+ will add deterministic merge/split normalization. |
 | `engine.confidence` | `profile` | string | `balanced` | Confidence profile: `strict` (block < 90%), `balanced` (block < 75%), `permissive` (warn only) |
 | `engine.risk` | `enabled` | bool | `false` | Enable deterministic risk scoring per commit |
 | `engine.risk` | `areas` | map | `{}` | Risk areas: pattern → weight (e.g. `auth: {patterns: ["auth/"], weight: 0.4}`) |
@@ -1051,12 +1051,13 @@ Theme: *Engine deepening, not surface growth*
 
 - **Import-graph ordering**: in Go repos, use `go list -json ./...` for actual package layers; fall back to directory heuristics otherwise. Trace records `ordering_strategy` (import_graph or fallback).
 - **Deterministic risk scoring**: per-commit risk based on file patterns (`engine.risk.areas`). Optional, configurable thresholds.
-- **Atomicity profiles**: `engine.atomicity.profile` — cohesive (fewer commits), balanced (default), strict (more commits). Affects effective max_commits; cache invalidated when profile changes.
+- **Atomicity profiles** (v0.5 = commit count policy): `engine.atomicity.profile` — cohesive (fewer commits), balanced (default), strict (more commits). Affects effective max_commits; cache invalidated when profile changes. v0.6+ will add deterministic merge/split normalization for a true granularity dial.
 - **`intentra plan --analyze`**: detailed per-commit diagnostics (hunks, files, rationale, risk). Use `--analyze --json` for structured output.
 - **Replay fixture corpus**: `testdata/snapshots/v0.5/` fixtures with CI enforcement.
 
 ### v0.6.0 -- PR & Shipping Intelligence (Capability Modules)
 
+- **Atomicity merge/split normalization**: deterministic post-cluster pass to merge or split commits based on profile (extends v0.5 commit-count policy into a true granularity dial)
 - **`intentra ship`**: single-command workflow — branch creation, apply, push, PR creation, rollback branch on failure
 - **AI-driven PR splitting** (`--split`): when a diff has unrelated concerns, propose and execute separate PRs
 - **Configurable branch templates**: template-based naming convention in config (e.g., `{type}/{ticket}/{summary}`)
