@@ -439,7 +439,9 @@ func TestGitExecutor_SkipHooks(t *testing.T) {
 	}
 
 	hooksDir := filepath.Join(dir, ".git", "hooks")
-	os.MkdirAll(hooksDir, 0755)
+	if err := os.MkdirAll(hooksDir, 0755); err != nil {
+		t.Fatalf("creating hooks dir: %v", err)
+	}
 	hookScript := "#!/bin/sh\necho 'pre-commit hook rejected' >&2\nexit 1\n"
 	hookPath := filepath.Join(hooksDir, "pre-commit")
 	if err := os.WriteFile(hookPath, []byte(hookScript), 0755); err != nil {
@@ -554,7 +556,9 @@ func TestGitExecutor_HookFailureRollback(t *testing.T) {
 	}
 
 	hooksDir := filepath.Join(dir, ".git", "hooks")
-	os.MkdirAll(hooksDir, 0755)
+	if err := os.MkdirAll(hooksDir, 0755); err != nil {
+		t.Fatalf("creating hooks dir: %v", err)
+	}
 	hookScript := "#!/bin/sh\nif git diff --cached --name-only | grep -q extra.go; then\n  echo 'hook rejected: extra.go' >&2\n  exit 1\nfi\n"
 	if err := os.WriteFile(filepath.Join(hooksDir, "pre-commit"), []byte(hookScript), 0755); err != nil {
 		t.Fatalf("writing hook: %v", err)
@@ -716,7 +720,9 @@ func TestGitExecutor_WorkingTreeDrift(t *testing.T) {
 	}
 
 	hooksDir := filepath.Join(dir, ".git", "hooks")
-	os.MkdirAll(hooksDir, 0755)
+	if err := os.MkdirAll(hooksDir, 0755); err != nil {
+		t.Fatalf("creating hooks dir: %v", err)
+	}
 	hookScript := "#!/bin/sh\necho '// external drift' >> extra.go\n"
 	if err := os.WriteFile(filepath.Join(hooksDir, "post-commit"), []byte(hookScript), 0755); err != nil {
 		t.Fatalf("writing hook: %v", err)
