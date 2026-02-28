@@ -31,9 +31,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `--analyze --json` for structured output
 
 **Replay Fixture Corpus**
-- `testdata/snapshots/v0.5/regression.json` fixture for CI
-- `TestReplayFixtureV05` runs mock-based replay and verifies structural equivalence
-- CI Replay Regression job includes fixture test
+- Canonical fixture at `testdata/snapshots/v0.5/regression.json` (run `go run scripts/gen-fixture.go` to regenerate)
+- `TestReplayFixtureV05` loads from repo root and verifies structural equivalence with mock replay
 
 ### Changed
 - Snapshot config includes `atomicity_profile` for replay equivalence
