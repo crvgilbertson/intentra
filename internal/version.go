@@ -1,3 +1,4 @@
 package internal
 
-const Version = "0.5.0"
+// Version is set at build time via ldflags; defaults to "dev" when built locally.
+var Version = "dev"
