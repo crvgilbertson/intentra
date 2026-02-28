@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/crvgilbertson/intentra/engine/atomicity"
 	enginectx "github.com/crvgilbertson/intentra/engine/context"
 	"github.com/crvgilbertson/intentra/engine/models"
 	"github.com/crvgilbertson/intentra/engine/reasoning"
@@ -291,7 +292,17 @@ func (p *CommitPlanner) BuildPlan(ctx context.Context, ec enginectx.EngineContex
 	}
 	trace.CommitsBefore = len(plan.Commits)
 
-	reorderCommitsByDependency(&plan, ec.Hunks)
+	if graph, err := enginectx.BuildImportGraph(ctx, ec.RootPath); err == nil && graph != nil && len(graph.FileToPackage) > 0 {
+		trace.OrderingStrategy = "import_graph"
+		hunkToFile := make(map[string]string, len(ec.Hunks))
+		for _, h := range ec.Hunks {
+			hunkToFile[h.HunkID] = filepath.ToSlash(h.FilePath)
+		}
+		enginectx.OrderCommitsByImportGraph(&plan, ec.Hunks, graph, hunkToFile)
+	} else {
+		trace.OrderingStrategy = "fallback"
+		reorderCommitsByDependency(&plan, ec.Hunks)
+	}
 
 	trace.CommitsAfter = len(plan.Commits)
 	for i, c := range plan.Commits {
@@ -320,10 +331,12 @@ func (p *CommitPlanner) clusterHunks(ctx context.Context, ec enginectx.EngineCon
 	if batchThreshold <= 0 {
 		batchThreshold = 40
 	}
-	maxCommits := ec.Config.Engine.MaxCommits
-	if maxCommits <= 0 {
-		maxCommits = 20
+	baseMax := ec.Config.Engine.MaxCommits
+	if baseMax <= 0 {
+		baseMax = 20
 	}
+	maxCommits := atomicity.EffectiveMaxCommits(baseMax, ec.Config.Engine.Atomicity.Profile)
+	trace.AtomicityProfile = atomicity.NormalizeProfile(ec.Config.Engine.Atomicity.Profile)
 
 	var cr ClusteringResponse
 	var err error

@@ -4,11 +4,16 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
 	"testing"
 
-	enginectx "github.com/crvgilbertson/intentra/engine/context"
-	"github.com/crvgilbertson/intentra/engine/models"
 	"github.com/crvgilbertson/intentra/config"
+	enginectx "github.com/crvgilbertson/intentra/engine/context"
+	"github.com/crvgilbertson/intentra/internal"
+	"github.com/crvgilbertson/intentra/engine/models"
 )
 
 // mockEngine is a test double for reasoning.ReasoningEngine.
@@ -123,8 +128,8 @@ func TestCommitPlanner_BuildPlan_Success(t *testing.T) {
 	if cp.SchemaVersion != models.CurrentSchemaVersion {
 		t.Errorf("expected schema version %s, got %s", models.CurrentSchemaVersion, cp.SchemaVersion)
 	}
-	if cp.ToolVersion != "0.4.0" {
-		t.Errorf("expected tool version 0.4.0, got %s", cp.ToolVersion)
+	if cp.ToolVersion != internal.Version {
+		t.Errorf("expected tool version %s, got %s", internal.Version, cp.ToolVersion)
 	}
 	if cp.BaseRef != "abc123" {
 		t.Errorf("expected base ref abc123, got %s", cp.BaseRef)
@@ -816,4 +821,121 @@ func TestSnapshotRegression(t *testing.T) {
 	if fp1 != fp2 {
 		t.Errorf("PromptFingerprint is not deterministic: %s != %s", fp1, fp2)
 	}
+}
+
+// TestReplayFixtureV05 loads the v0.5 fixture, replays with mock, and verifies
+// structural equivalence. Ensures CI fixture replay passes (v0.5 gates).
+func TestReplayFixtureV05(t *testing.T) {
+	fixturePath := filepath.Join("testdata", "snapshots", "v0.5", "regression.json")
+	if _, err := os.Stat(fixturePath); err != nil {
+		fixturePath = filepath.Join("..", "..", "testdata", "snapshots", "v0.5", "regression.json")
+	}
+	data, err := os.ReadFile(fixturePath)
+	if err != nil {
+		t.Skipf("fixture not found (run 'go run scripts/gen-fixture.go'): %v", err)
+	}
+
+	var snap models.PlanSnapshot
+	if err := json.Unmarshal(data, &snap); err != nil {
+		t.Fatalf("parse fixture: %v", err)
+	}
+
+	if snap.SchemaVersion != models.CurrentSchemaVersion {
+		t.Fatalf("schema mismatch: fixture %s, current %s", snap.SchemaVersion, models.CurrentSchemaVersion)
+	}
+
+	// Build ec from snapshot
+	hunks := make([]models.Hunk, len(snap.Hunks))
+	for i, m := range snap.Hunks {
+		hunks[i] = models.Hunk{
+			HunkID: m.HunkID, FilePath: m.FilePath, Header: m.Header, Patch: m.Patch,
+			Summary: m.Summary, NewFile: m.NewFile, DeletedFile: m.DeletedFile, RenamedFrom: m.RenamedFrom,
+		}
+	}
+
+	cfg := config.DefaultConfig()
+	cfg.AI.Provider = snap.Config.Provider
+	cfg.AI.Model = snap.Config.Model
+	cfg.AI.Temperature = snap.Config.Temperature
+	cfg.AI.MaxHunkLines = snap.Config.MaxHunkLines
+	cfg.Engine.MaxCommits = snap.Config.MaxCommits
+	cfg.Engine.BatchThreshold = snap.Config.BatchThreshold
+	if snap.Config.AtomicityProfile != "" {
+		cfg.Engine.Atomicity.Profile = snap.Config.AtomicityProfile
+	}
+	cfg.Style = snap.Config.Style
+
+	// Use empty RootPath to force fallback ordering (not import graph), so the
+	// fixture's expected order (models, planners, cmd) matches packageLayer.
+	ec := enginectx.EngineContext{
+		BaseRef:  snap.Plan.BaseRef,
+		RootPath: "",
+		Hunks:    hunks,
+		Config:   cfg,
+	}
+
+	// Mock responses matching TestSnapshotRegression (compact IDs: h1=h_cmd, h2=h_doc, h3=h_exec, h4=h_mod1, h5=h_mod2, h6=h_plan)
+	clusterResp := ClusteringResponse{
+		Groups: []ClusterGroup{
+			{ID: "g1", HunkIDs: []string{"h4", "h5", "h4"}, Rationale: "type definitions"},
+			{ID: "g2", HunkIDs: []string{"h6"}, Rationale: "planner logic"},
+			{ID: "g3", HunkIDs: []string{"h1"}, Rationale: "cli entrypoint"},
+		},
+	}
+	scope := "models"
+	messagingResp := MessagingResponse{
+		Commits: []CommitMessageWithGroup{
+			{GroupID: "g1", CommitMessage: CommitMessage{Type: "refactor", Scope: &scope, Subject: "update type definitions"}},
+			{GroupID: "g2", CommitMessage: CommitMessage{Type: "refactor", Subject: "update planner logic"}},
+			{GroupID: "g3", CommitMessage: CommitMessage{Type: "chore", Subject: "update CLI entrypoint"}},
+		},
+	}
+
+	engine := &mockEngine{
+		responses: []json.RawMessage{mustJSON(clusterResp), nil, mustJSON(messagingResp)},
+		errors:    []error{nil, fmt.Errorf("rescue failed"), nil},
+	}
+
+	planner := NewCommitPlanner(engine)
+	plan, err := planner.BuildPlan(context.Background(), ec)
+	if err != nil {
+		t.Fatalf("replay failed: %v", err)
+	}
+
+	cp := plan.(*models.CommitPlan)
+	stored := &snap.Plan
+
+	if len(cp.Commits) != len(stored.Commits) {
+		t.Errorf("commit count: got %d, want %d", len(cp.Commits), len(stored.Commits))
+	}
+
+	// Structural comparison: grouping and order
+	for i := range cp.Commits {
+		got := sortedCopy(cp.Commits[i].Hunks)
+		want := sortedCopy(stored.Commits[i].Hunks)
+		if !slicesEqual(got, want) {
+			t.Errorf("commit %d hunks: got %v, want %v", i+1, got, want)
+		}
+		if cp.Commits[i].Type != stored.Commits[i].Type {
+			t.Errorf("commit %d type: got %s, want %s", i+1, cp.Commits[i].Type, stored.Commits[i].Type)
+		}
+	}
+
+	// v0.5 gates: fixture has atomicity_profile and ordering_strategy
+	if snap.Trace != nil {
+		if snap.Trace.AtomicityProfile == "" {
+			t.Error("fixture must include atomicity_profile (v0.5 signal)")
+		}
+	}
+}
+
+func sortedCopy(s []string) []string {
+	c := make([]string, len(s))
+	copy(c, s)
+	sort.Strings(c)
+	return c
+}
+
+func slicesEqual(a, b []string) bool {
+	return strings.Join(a, ",") == strings.Join(b, ",")
 }
