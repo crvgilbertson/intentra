@@ -346,9 +346,17 @@ func buildPatch(commit models.CommitUnit, hunkMap map[string]models.Hunk) string
 		fmt.Fprintf(&sb, "diff --git %s %s\n", absA, absB)
 
 		if isDeleted {
-			fmt.Fprintf(&sb, "deleted file mode 100644\n")
+			mode := oldMode
+			if mode == "" {
+				mode = "100644"
+			}
+			fmt.Fprintf(&sb, "deleted file mode %s\n", mode)
 		} else if isNew {
-			fmt.Fprintf(&sb, "new file mode 100644\n")
+			mode := newMode
+			if mode == "" {
+				mode = "100644"
+			}
+			fmt.Fprintf(&sb, "new file mode %s\n", mode)
 		}
 
 		if oldMode != "" && newMode != "" {
