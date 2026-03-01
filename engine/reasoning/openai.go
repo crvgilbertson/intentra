@@ -65,9 +65,10 @@ func (e *OpenAIEngine) CallStructured(ctx context.Context, schemaName string, sc
 		openai.SystemMessage(systemPrompt),
 	}
 	for _, m := range messages {
-		if m.Role == "user" {
+		switch m.Role {
+		case "user":
 			oaiMessages = append(oaiMessages, openai.UserMessage(m.Content))
-		} else if m.Role == "assistant" {
+		case "assistant":
 			oaiMessages = append(oaiMessages, openai.AssistantMessage(m.Content))
 		}
 	}

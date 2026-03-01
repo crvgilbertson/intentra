@@ -51,9 +51,10 @@ func (e *AnthropicEngine) CallStructured(ctx context.Context, schemaName string,
 
 	antMessages := make([]anthropic.MessageParam, 0, len(messages))
 	for _, m := range messages {
-		if m.Role == "user" {
+		switch m.Role {
+		case "user":
 			antMessages = append(antMessages, anthropic.NewUserMessage(anthropic.NewTextBlock(m.Content)))
-		} else if m.Role == "assistant" {
+		case "assistant":
 			antMessages = append(antMessages, anthropic.NewAssistantMessage(anthropic.NewTextBlock(m.Content)))
 		}
 	}
