@@ -808,3 +808,71 @@ func parseDiffForTest(raw string) []models.Hunk {
 	}
 	return hunks
 }
+
+func TestGitExecutor_ExecutableBitPreservation(t *testing.T) {
+	dir := setupTestRepo(t)
+
+	// Create an executable script
+	scriptContent := "#!/bin/sh\necho 'hello'\n"
+	writeFile(t, dir, "script.sh", scriptContent)
+
+	run := func(args ...string) string {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		cmd.Env = append(os.Environ(),
+			"GIT_AUTHOR_NAME=test",
+			"GIT_AUTHOR_EMAIL=test@test.com",
+			"GIT_COMMITTER_NAME=test",
+			"GIT_COMMITTER_EMAIL=test@test.com",
+		)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %s failed: %v\n%s", strings.Join(args, " "), err, out)
+		}
+		return string(out)
+	}
+
+	// Add it to the working tree
+	run("add", "script.sh")
+
+	// Ensure the file is actually executable in the index
+	run("update-index", "--chmod=+x", "script.sh")
+
+	// Get the diff
+	diffOut := run("diff", "--cached")
+	if len(diffOut) == 0 {
+		t.Fatal("expected diff output")
+	}
+
+	run("restore", "--staged", "script.sh")
+
+	// Create hunks manually to simulate parser injecting the exact modes extracted from the diff
+	hunks := []models.Hunk{
+		{
+			HunkID:   "h1",
+			FilePath: "script.sh",
+			NewFile:  true,
+			NewMode:  "100755",
+			Header:   "@@ -0,0 +1,2 @@",
+			Patch:    "+#!/bin/sh\n+echo 'hello'",
+		},
+	}
+
+	plan := &models.CommitPlan{
+		Commits: []models.CommitUnit{
+			{ID: "c1", Type: "feat", Subject: "add script", Hunks: []string{"h1"}},
+		},
+	}
+
+	executor := NewGitExecutorWithHunks(dir, hunks, ExecutorOptions{})
+	if err := executor.Execute(context.Background(), plan, false); err != nil {
+		t.Fatalf("execute failed: %v", err)
+	}
+
+	// Verify the executable bit is physically preserved in the tree index
+	lsFilesAuth := run("ls-files", "--stage", "script.sh")
+	if !strings.Contains(lsFilesAuth, "100755") {
+		t.Errorf("expected file to have mode 100755 in index, but got: %s", lsFilesAuth)
+	}
+}

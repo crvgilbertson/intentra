@@ -54,19 +54,28 @@ func NewOpenAIEngineWithAPIKey(model string, temperature float64, baseURL string
 	}
 }
 
-func (e *OpenAIEngine) CallStructured(ctx context.Context, schemaName string, schema interface{}, systemPrompt string, userInput string) (json.RawMessage, error) {
+func (e *OpenAIEngine) CallStructured(ctx context.Context, schemaName string, schema interface{}, systemPrompt string, messages []Message) (json.RawMessage, error) {
 	schemaParam := openai.ResponseFormatJSONSchemaJSONSchemaParam{
 		Name:   schemaName,
 		Schema: schema,
 		Strict: openai.Bool(true),
 	}
 
+	oaiMessages := []openai.ChatCompletionMessageParamUnion{
+		openai.SystemMessage(systemPrompt),
+	}
+	for _, m := range messages {
+		switch m.Role {
+		case "user":
+			oaiMessages = append(oaiMessages, openai.UserMessage(m.Content))
+		case "assistant":
+			oaiMessages = append(oaiMessages, openai.AssistantMessage(m.Content))
+		}
+	}
+
 	chat, err := e.client.Chat.Completions.New(ctx, openai.ChatCompletionNewParams{
-		Model: e.model,
-		Messages: []openai.ChatCompletionMessageParamUnion{
-			openai.SystemMessage(systemPrompt),
-			openai.UserMessage(userInput),
-		},
+		Model:    e.model,
+		Messages: oaiMessages,
 		ResponseFormat: openai.ChatCompletionNewParamsResponseFormatUnion{
 			OfJSONSchema: &openai.ResponseFormatJSONSchemaParam{JSONSchema: schemaParam},
 		},

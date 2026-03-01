@@ -5,6 +5,14 @@ All notable changes to Intentra are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.5] -- Bug Fixes
+
+### Fixed
+- **Context Layer**: Fixed diff parser to handle quoted file paths (files with spaces) and natively extract `OldMode` and `NewMode` from the diff header.
+- **Planner Layer**: Fixed deduplication loop dropping duplicate hunks without checking if it left a group completely empty, causing slice indexing bugs later on.
+- **Executor Layer**: Fixed git executor hardcoding executable permissions (`100644`). It now propagates `100755` permissions for new executable shell scripts correctly by using the parsed bits.
+- **Reasoning Layer**: Fixed the "Retry Context Amnesia" issue where the fallback retry loop told the LLM it failed structurally, but didn't retain the Assistant's failed generation output over multiple attempts, breaking its ability to self-correct.
+
 ## [0.5.4] -- Release Infrastructure
 
 ### Added

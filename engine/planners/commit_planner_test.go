@@ -12,18 +12,19 @@ import (
 
 	"github.com/crvgilbertson/intentra/config"
 	enginectx "github.com/crvgilbertson/intentra/engine/context"
-	"github.com/crvgilbertson/intentra/internal"
 	"github.com/crvgilbertson/intentra/engine/models"
+	"github.com/crvgilbertson/intentra/engine/reasoning"
+	"github.com/crvgilbertson/intentra/internal"
 )
 
 // mockEngine is a test double for reasoning.ReasoningEngine.
 type mockEngine struct {
-	calls    int
+	calls     int
 	responses []json.RawMessage
-	errors   []error
+	errors    []error
 }
 
-func (m *mockEngine) CallStructured(_ context.Context, _ string, _ interface{}, _ string, _ string) (json.RawMessage, error) {
+func (m *mockEngine) CallStructured(_ context.Context, _ string, _ interface{}, _ string, _ []reasoning.Message) (json.RawMessage, error) {
 	idx := m.calls
 	m.calls++
 	if idx >= len(m.responses) {
@@ -584,10 +585,16 @@ func TestDeduplicateGroups(t *testing.T) {
 		Groups: []ClusterGroup{
 			{ID: "g1", HunkIDs: []string{"a", "b", "a"}},
 			{ID: "g2", HunkIDs: []string{"c", "b"}},
+			{ID: "g3", HunkIDs: []string{"c"}},
+			{ID: "g4", HunkIDs: []string{"d"}},
 		},
 	}
 
 	deduped := deduplicateGroups(cr)
+
+	if len(deduped.Groups) != 3 {
+		t.Fatalf("expected 3 groups after removing empty g3, got %d", len(deduped.Groups))
+	}
 
 	if len(deduped.Groups[0].HunkIDs) != 2 {
 		t.Errorf("g1: expected 2 after dedup, got %d", len(deduped.Groups[0].HunkIDs))
@@ -598,6 +605,10 @@ func TestDeduplicateGroups(t *testing.T) {
 	}
 	if deduped.Groups[1].HunkIDs[0] != "c" {
 		t.Errorf("g2: expected 'c', got %s", deduped.Groups[1].HunkIDs[0])
+	}
+	// "c" was seen in g2, so g3 became empty and was removed. The new 3rd group is g4, which gets re-versioned to g3.
+	if deduped.Groups[2].ID != "g3" || deduped.Groups[2].HunkIDs[0] != "d" {
+		t.Errorf("expected original g4 to be the 3rd group, re-IDed to g3")
 	}
 }
 
