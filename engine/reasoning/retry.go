@@ -25,14 +25,13 @@ func CallWithRetry[T any](
 		maxRetries = 0
 	}
 
+	messages := []Message{
+		{Role: "user", Content: userInput},
+	}
 	var lastErr error
-	for attempt := 0; attempt <= maxRetries; attempt++ {
-		input := userInput
-		if attempt > 0 && lastErr != nil {
-			input += fmt.Sprintf("\n\n[CORRECTION]: Your previous response failed: %v. Please fix the issues and respond again.", lastErr)
-		}
 
-		raw, err := eng.CallStructured(ctx, schemaName, schema, systemPrompt, input)
+	for attempt := 0; attempt <= maxRetries; attempt++ {
+		raw, err := eng.CallStructured(ctx, schemaName, schema, systemPrompt, messages)
 		if err != nil {
 			return zero, engine.NewReasoningError(
 				fmt.Sprintf("call failed (attempt %d/%d)", attempt+1, maxRetries+1), err)
@@ -41,11 +40,15 @@ func CallWithRetry[T any](
 		var result T
 		if err := json.Unmarshal(raw, &result); err != nil {
 			lastErr = fmt.Errorf("invalid JSON: %w", err)
+			messages = append(messages, Message{Role: "assistant", Content: string(raw)})
+			messages = append(messages, Message{Role: "user", Content: fmt.Sprintf("[CORRECTION]: Your previous response failed: %v. Please fix the issues and respond again.", lastErr)})
 			continue
 		}
 
 		if err := validate(result); err != nil {
 			lastErr = fmt.Errorf("validation: %w", err)
+			messages = append(messages, Message{Role: "assistant", Content: string(raw)})
+			messages = append(messages, Message{Role: "user", Content: fmt.Sprintf("[CORRECTION]: Your previous response failed: %v. Please fix the issues and respond again.", lastErr)})
 			continue
 		}
 
