@@ -12,18 +12,19 @@ import (
 
 	"github.com/crvgilbertson/intentra/config"
 	enginectx "github.com/crvgilbertson/intentra/engine/context"
-	"github.com/crvgilbertson/intentra/internal"
 	"github.com/crvgilbertson/intentra/engine/models"
+	"github.com/crvgilbertson/intentra/engine/reasoning"
+	"github.com/crvgilbertson/intentra/internal"
 )
 
 // mockEngine is a test double for reasoning.ReasoningEngine.
 type mockEngine struct {
-	calls    int
+	calls     int
 	responses []json.RawMessage
-	errors   []error
+	errors    []error
 }
 
-func (m *mockEngine) CallStructured(_ context.Context, _ string, _ interface{}, _ string, _ string) (json.RawMessage, error) {
+func (m *mockEngine) CallStructured(_ context.Context, _ string, _ interface{}, _ string, _ []reasoning.Message) (json.RawMessage, error) {
 	idx := m.calls
 	m.calls++
 	if idx >= len(m.responses) {
