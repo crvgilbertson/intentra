@@ -923,7 +923,9 @@ func consolidateSingleFileGroups(cr ClusteringResponse, hunks []models.Hunk) Clu
 
 func deduplicateGroups(cr ClusteringResponse) ClusteringResponse {
 	seen := make(map[string]bool)
-	for i, g := range cr.Groups {
+	var finalGroups []ClusterGroup
+
+	for _, g := range cr.Groups {
 		deduped := make([]string, 0, len(g.HunkIDs))
 		for _, hid := range g.HunkIDs {
 			if !seen[hid] {
@@ -931,8 +933,19 @@ func deduplicateGroups(cr ClusteringResponse) ClusteringResponse {
 				deduped = append(deduped, hid)
 			}
 		}
-		cr.Groups[i].HunkIDs = deduped
+
+		if len(deduped) > 0 {
+			g.HunkIDs = deduped
+			finalGroups = append(finalGroups, g)
+		}
 	}
+
+	// Re-assign IDs to ensure they are sequential (g1, g2, g3) after removals
+	for i := range finalGroups {
+		finalGroups[i].ID = fmt.Sprintf("g%d", i+1)
+	}
+
+	cr.Groups = finalGroups
 	return cr
 }
 
