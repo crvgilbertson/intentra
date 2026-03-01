@@ -103,21 +103,34 @@ func splitFileSections(raw string) []string {
 	return sections
 }
 
-// extractFilePath pulls the b/ path from the "diff --git a/... b/..." line,
-// falling back to +++ header if needed.
 func extractFilePath(section string) string {
 	lines := strings.SplitN(section, "\n", 10)
 	for _, line := range lines {
 		if strings.HasPrefix(line, "diff --git ") {
-			parts := strings.SplitN(line, " b/", 2)
-			if len(parts) == 2 {
-				return strings.TrimSpace(parts[1])
+			// e.g., diff --git a/foo b/foo
+			// diff --git "a/foo bar" "b/foo bar"
+			suffix := strings.TrimPrefix(line, "diff --git ")
+			// Split by " b/" or ` "b/` to handle quotes
+			idx := strings.Index(suffix, " b/")
+			if idx == -1 {
+				idx = strings.Index(suffix, ` "b/`)
+			}
+			if idx != -1 {
+				path := strings.TrimSpace(suffix[idx+1:])
+				path = strings.TrimPrefix(path, `"`)
+				path = strings.TrimPrefix(path, "b/")
+				path = strings.TrimSuffix(path, `"`)
+				return path
 			}
 		}
 	}
 	for _, line := range lines {
 		if strings.HasPrefix(line, "+++ b/") {
 			return strings.TrimSpace(strings.TrimPrefix(line, "+++ b/"))
+		}
+		if strings.HasPrefix(line, `+++ "b/`) {
+			path := strings.TrimSpace(strings.TrimPrefix(line, `+++ "b/`))
+			return strings.TrimSuffix(path, `"`)
 		}
 	}
 	return ""
@@ -163,7 +176,7 @@ func extractRenamedFrom(section string) string {
 	return ""
 }
 
-// extractModeChange returns old/new mode strings if a mode change is present.
+// extractModeChange returns old/new mode strings if a mode change or creation/deletion is present.
 func extractModeChange(section string) (oldMode, newMode string) {
 	for _, line := range headerLines(section) {
 		if strings.HasPrefix(line, "old mode ") {
@@ -171,6 +184,12 @@ func extractModeChange(section string) (oldMode, newMode string) {
 		}
 		if strings.HasPrefix(line, "new mode ") {
 			newMode = strings.TrimSpace(strings.TrimPrefix(line, "new mode "))
+		}
+		if strings.HasPrefix(line, "new file mode ") {
+			newMode = strings.TrimSpace(strings.TrimPrefix(line, "new file mode "))
+		}
+		if strings.HasPrefix(line, "deleted file mode ") {
+			oldMode = strings.TrimSpace(strings.TrimPrefix(line, "deleted file mode "))
 		}
 	}
 	return
