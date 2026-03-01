@@ -84,6 +84,27 @@ rename to new.go
  func Run() {}
 `
 
+const spaceFilenameDiff = `diff --git "a/my file.go" "b/my file.go"
+index 1111111..2222222 100644
+--- "a/my file.go"
++++ "b/my file.go"
+@@ -1,3 +1,4 @@
+ package main
+ 
++import "fmt"
+`
+
+const newFileModeDiff = `diff --git a/new_script.sh b/new_script.sh
+new file mode 100755
+index 0000000..def5678
+--- /dev/null
++++ b/new_script.sh
+@@ -0,0 +1,2 @@
++#!/bin/bash
++echo "hello"
+`
+
+
 func TestParseDiff_SingleFile_TwoHunks(t *testing.T) {
 	hunks := ParseDiff(singleFileDiff)
 	if len(hunks) != 2 {
@@ -224,3 +245,30 @@ func TestParseDiff_HunkIDsUnique(t *testing.T) {
 		seen[h.HunkID] = true
 	}
 }
+
+func TestParseDiff_SpacesInFilename(t *testing.T) {
+	hunks := ParseDiff(spaceFilenameDiff)
+	if len(hunks) != 1 {
+		t.Fatalf("expected 1 hunk, got %d", len(hunks))
+	}
+	if hunks[0].FilePath != "my file.go" {
+		t.Errorf("expected 'my file.go', got %q", hunks[0].FilePath)
+	}
+}
+
+func TestParseDiff_NewFileMode(t *testing.T) {
+	hunks := ParseDiff(newFileModeDiff)
+	if len(hunks) != 1 {
+		t.Fatalf("expected 1 hunk, got %d", len(hunks))
+	}
+	if !hunks[0].NewFile {
+		t.Error("expected NewFile=true")
+	}
+	if hunks[0].NewMode != "100755" {
+		t.Errorf("expected new_mode=100755, got %q", hunks[0].NewMode)
+	}
+	if hunks[0].FilePath != "new_script.sh" {
+		t.Errorf("expected 'new_script.sh', got %q", hunks[0].FilePath)
+	}
+}
+
