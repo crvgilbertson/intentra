@@ -1076,69 +1076,52 @@ Theme: *Engine deepening, not surface growth*
 - **`intentra plan --analyze`**: detailed per-commit diagnostics (hunks, files, rationale, risk). Use `--analyze --json` for structured output.
 - **Replay fixture corpus**: `testdata/snapshots/v0.5/` fixtures with CI enforcement.
 
-### v0.6.0 -- PR & Shipping Intelligence (Capability Modules)
+### v0.6 — Change Intelligence (Bridging Dev → PM)
 
-- **Atomicity merge/split normalization**: deterministic post-cluster pass to merge or split commits based on profile (extends v0.5 commit-count policy into a true granularity dial)
-- **`intentra ship`**: single-command workflow — branch creation, apply, push, PR creation, rollback branch on failure
-- **AI-driven PR splitting** (`--split`): when a diff has unrelated concerns, propose and execute separate PRs
-- **Configurable branch templates**: template-based naming convention in config (e.g., `{type}/{ticket}/{summary}`)
-- **Structured PR descriptions**: change summary, commit list, affected files, and review hints — derived from the commit plan
-- **Review checklist generation**: auto-generated checklist based on affected subsystems
-- **`intentra review`**: self-review before submitting
-- All implemented as capability modules layered on the core engine
+Theme: *PM visibility from cached plans — no extra LLM calls*
 
-### v0.7.0 -- CI/CD Integration
+- **`intentra release-notes`**: Features, fixes, refactors, breaking changes, risk summary, high-risk areas touched — derived from cached plan + commit metadata
+- **`intentra changelog --since v0.5.0`**: Structured CHANGELOG.md entries, version sections, risk indicators, linked tickets
+- **Ticket linking (lightweight)**: detect ticket pattern from branch name; `--ticket PROJ-123` flag; ticket footer in commits; included in release notes
+- **`intentra risk-report`**: high-risk commits, sensitive areas touched, database/auth/config changes, aggregate risk score for release
 
-- Official GitHub Action (`uses: crvgilbertson/intentra-action`)
-- `intentra plan --json` in CI for commit hygiene validation
-- Merge blocking based on commit hygiene, confidence thresholds, and risk scores
-- PR comment summaries posted automatically
-- Engine remains deterministic; CI is a consumer, not a modifier
+### v0.7 — Policy Enforcement Mode (Team Level)
 
-### v0.8.0 -- Team Configuration & Style Intelligence
+Theme: *Helper → guardrail*
 
-- Shareable config presets for common setups (monorepo, library, microservice)
-- Scope auto-detection from module boundaries
-- **Commit style learning**: analyze recent repo history to infer preferred commit types, scopes, and message patterns
-- Team config + personal overrides
-- **`intentra config check`**: config validation and drift detection
-- Style guidance influences planning but never bypasses validation rules
+- **`intentra ci-check`**: fail build if confidence below threshold, risk above threshold, atomicity profile violated, overlapping files, disallowed commit types
+- **Config presets**: `profile: monorepo`, `profile: strict-release`, `profile: fast-dev` — bundle atomicity, confidence, and risk thresholds for low-friction adoption
 
-### v0.9.0 -- Repository Intelligence (Optional Local Index)
+### v0.8 — Artifact Intelligence
 
-- **Optional local structural index**: persistent store of repo structure, file ownership, and change frequency
-- **Hot-path detection**: identify files that frequently change together and bias clustering toward co-location
-- **Change frequency weighting**: weight clustering decisions by how often files change
-- **Style fingerprinting**: learn the team's commit voice from history
-- **Clustering bias from repo history**: historical patterns inform grouping heuristics
-- Fully opt-in. Engine works without index.
+Theme: *Value surface without bloating workflow*
 
-### v1.0.0 -- Stable Infrastructure Platform
+- **Enhanced `intentra pr`**: structured PR description, risk summary, commit rationale, review checklist
+- **Review checklist generator**: "Auth changed → check token expiry"; "DB migration → verify rollback"; "Config touched → verify defaults" — from risk signals
+
+### v0.9 — Repository Intelligence
+
+Theme: *Strategic, opt-in*
+
+- **Historical pattern learning**: which files change together, high-churn areas, typical commit count per feature — improve clustering heuristics
+- **Style fingerprinting**: learn subject style and type/scope usage from history; adjust messaging prompts to match team voice
+
+### v1.0.0 — Stable Platform
 
 **Stability Contract**
 
+- JSON schema frozen
 - CLI flags stable
 - Config schema stable
-- JSON plan schema stable (versioned)
-- Prompt fingerprinting preserved
-- Deterministic replay supported
 
 **Extensibility**
 
-- Plugin interface for custom planners and validators
-- Capability registry for workflow modules
-- Clear boundary between engine core and adapters
+- Plugin interface: custom risk rules, validators, planners
 
-**Performance**
+**Distribution**
 
-- Parallel hunk analysis for large diffs
-- Optimized large-diff handling
-
-**Tooling**
-
-- `intentra upgrade` for self-updating
-- Full documentation site
-- Reproducibility and stability guarantees documented
+- Official CI action: `uses: crvgilbertson/intentra-action@v1`
+- Documentation site: architecture, policy, replay explanation
 
 ---
 
