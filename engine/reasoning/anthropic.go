@@ -40,7 +40,7 @@ func NewAnthropicEngineWithBaseURL(model string, temperature float64, baseURL st
 	}
 }
 
-func (e *AnthropicEngine) CallStructured(ctx context.Context, schemaName string, schema interface{}, systemPrompt string, userInput string) (json.RawMessage, error) {
+func (e *AnthropicEngine) CallStructured(ctx context.Context, schemaName string, schema interface{}, systemPrompt string, messages []Message) (json.RawMessage, error) {
 	inputSchema := convertToToolInputSchema(schema)
 
 	tool := anthropic.ToolParam{
@@ -49,19 +49,26 @@ func (e *AnthropicEngine) CallStructured(ctx context.Context, schemaName string,
 		InputSchema: inputSchema,
 	}
 
+	antMessages := make([]anthropic.MessageParam, 0, len(messages))
+	for _, m := range messages {
+		if m.Role == "user" {
+			antMessages = append(antMessages, anthropic.NewUserMessage(anthropic.NewTextBlock(m.Content)))
+		} else if m.Role == "assistant" {
+			antMessages = append(antMessages, anthropic.NewAssistantMessage(anthropic.NewTextBlock(m.Content)))
+		}
+	}
+
 	message, err := e.client.Messages.New(ctx, anthropic.MessageNewParams{
 		Model:     e.model,
 		MaxTokens: e.maxTokens,
 		System: []anthropic.TextBlockParam{
 			{Text: systemPrompt},
 		},
-		Messages: []anthropic.MessageParam{
-			anthropic.NewUserMessage(anthropic.NewTextBlock(userInput)),
-		},
+		Messages: antMessages,
 		Tools: []anthropic.ToolUnionParam{
 			{OfTool: &tool},
 		},
-		ToolChoice: anthropic.ToolChoiceParamOfTool(schemaName),
+		ToolChoice:  anthropic.ToolChoiceParamOfTool(schemaName),
 		Temperature: anthropic.Float(e.temperature),
 	})
 	if err != nil {
