@@ -5,6 +5,17 @@ All notable changes to Intentra are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.7] -- Executor Resiliency
+
+### Fixed
+- **Executor Layer**: Hunks are now sorted by line number before patch assembly, preventing `git apply` failures when the LLM returns hunk IDs in arbitrary order.
+- **Executor Layer**: File paths containing spaces are now properly quoted in generated patches using `strconv.Quote`, matching standard git escaping.
+- **Executor Layer**: Mode-only hunks (no `@@` content) no longer emit empty `---`/`+++` blocks that could confuse `git apply`.
+
+### Changed
+- GoReleaser config updated to `version: 2` (required by `goreleaser-action@v7`).
+- Replaced `if/else if` role checks with `switch` statements in `anthropic.go` and `openai.go` to satisfy `staticcheck` linter.
+
 ## [0.5.6] -- Bug Fixes
 
 ### Fixed
