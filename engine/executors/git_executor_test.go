@@ -876,3 +876,114 @@ func TestGitExecutor_ExecutableBitPreservation(t *testing.T) {
 		t.Errorf("expected file to have mode 100755 in index, but got: %s", lsFilesAuth)
 	}
 }
+
+func TestGitExecutor_UnorderedHunks(t *testing.T) {
+	dir := setupTestRepo(t)
+
+	gap := "\n\n\n\n\n\n\n\n\n\n"
+	writeFile(t, dir, "numbers.go", "package main\n\nfunc one() {}"+gap+"func two() {}\n")
+
+	run := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		cmd.Env = append(os.Environ(),
+			"GIT_AUTHOR_NAME=test",
+			"GIT_AUTHOR_EMAIL=test@test.com",
+			"GIT_COMMITTER_NAME=test",
+			"GIT_COMMITTER_EMAIL=test@test.com",
+		)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %s failed: %v\n%s", strings.Join(args, " "), err, out)
+		}
+	}
+
+	run("add", "numbers.go")
+	run("commit", "-m", "add numbers")
+
+	writeFile(t, dir, "numbers.go", "package main\n\nfunc one() { println(1) }"+gap+"func two() { println(2) }\n")
+
+	cmd := exec.Command("git", "diff", "HEAD")
+	cmd.Dir = dir
+	diffOut, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("git diff failed: %v", err)
+	}
+
+	hunks := parseDiffForTest(string(diffOut))
+	if len(hunks) < 2 {
+		t.Fatalf("expected at least 2 hunks from diff, got %d", len(hunks))
+	}
+
+	// Intentionally reverse the order of the hunks in the commit unit
+	hunkIDs := []string{hunks[1].HunkID, hunks[0].HunkID}
+
+	plan := &models.CommitPlan{
+		Commits: []models.CommitUnit{
+			{ID: "c1", Type: "feat", Subject: "add prints", Hunks: hunkIDs},
+		},
+	}
+
+	executor := NewGitExecutorWithHunks(dir, hunks, ExecutorOptions{})
+	if err := executor.Execute(context.Background(), plan, false); err != nil {
+		t.Fatalf("execute failed to apply unordered hunks: %v", err)
+	}
+
+	logs := gitLog(t, dir)
+	if logs[0] != "feat: add prints" {
+		t.Errorf("unexpected commit message: %s", logs[0])
+	}
+}
+
+func TestGitExecutor_SpacedPaths(t *testing.T) {
+	dir := setupTestRepo(t)
+
+	run := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		cmd.Env = append(os.Environ(),
+			"GIT_AUTHOR_NAME=test",
+			"GIT_AUTHOR_EMAIL=test@test.com",
+			"GIT_COMMITTER_NAME=test",
+			"GIT_COMMITTER_EMAIL=test@test.com",
+		)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %s failed: %v\n%s", strings.Join(args, " "), err, out)
+		}
+	}
+
+	writeFile(t, dir, "my file.go", "package main\n\nfunc space() {}\n")
+
+	run("add", "my file.go")
+
+	hunks := []models.Hunk{
+		{
+			FilePath: "my file.go",
+			NewFile:  true,
+			Header:   "@@ -0,0 +1,3 @@",
+			Patch:    "+package main\n+\n+func space() {}",
+		},
+	}
+	hunks[0].HunkID = testHash(hunks[0])
+
+	run("restore", "--staged", "my file.go")
+
+	plan := &models.CommitPlan{
+		Commits: []models.CommitUnit{
+			{ID: "c1", Type: "feat", Subject: "add space file", Hunks: []string{hunks[0].HunkID}},
+		},
+	}
+
+	executor := NewGitExecutorWithHunks(dir, hunks, ExecutorOptions{})
+	if err := executor.Execute(context.Background(), plan, false); err != nil {
+		t.Fatalf("execute failed to apply spaced path: %v", err)
+	}
+
+	logs := gitLog(t, dir)
+	if logs[0] != "feat: add space file" {
+		t.Errorf("unexpected commit message: %s", logs[0])
+	}
+}

@@ -83,10 +83,10 @@ brew install intentra
 ### Go
 
 ```bash
-go install github.com/crvgilbertson/intentra@v0.5.6
+go install github.com/crvgilbertson/intentra@v0.5.7
 ```
 
-> **Note:** Pin to a specific version (e.g. `@v0.5.6`) rather than `@latest`. Version matters for infra tools.
+> **Note:** Pin to a specific version (e.g. `@v0.5.7`) rather than `@latest`. Version matters for infra tools.
 
 ### Download Binary
 

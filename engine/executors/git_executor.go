@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/crvgilbertson/intentra/engine"
@@ -306,8 +307,18 @@ func buildPatch(commit models.CommitUnit, hunkMap map[string]models.Hunk) string
 	var sb strings.Builder
 	for _, filePath := range files {
 		hunks := fileHunks[filePath]
+
+		sort.Slice(hunks, func(i, j int) bool {
+			return extractOldStart(hunks[i].Header) < extractOldStart(hunks[j].Header)
+		})
+
 		pathSlash := filepath.ToSlash(filePath)
-		absB := "b/" + pathSlash
+		var absB string
+		if strings.Contains(pathSlash, " ") {
+			absB = strconv.Quote("b/" + pathSlash)
+		} else {
+			absB = "b/" + pathSlash
+		}
 
 		var renamedFrom string
 		var isNew, isDeleted bool
@@ -330,14 +341,21 @@ func buildPatch(commit models.CommitUnit, hunkMap map[string]models.Hunk) string
 			}
 		}
 
-		absA := "a/" + pathSlash
+		var rawAbsA string
 		if renamedFrom != "" {
-			absA = "a/" + filepath.ToSlash(renamedFrom)
+			rawAbsA = "a/" + filepath.ToSlash(renamedFrom)
+		} else {
+			rawAbsA = "a/" + pathSlash
+		}
+
+		absA := rawAbsA
+		if strings.Contains(rawAbsA, " ") {
+			absA = strconv.Quote(rawAbsA)
 		}
 
 		hasContentHunks := false
 		for _, h := range hunks {
-			if h.Header != "" {
+			if h.Header != "" && h.Patch != "" {
 				hasContentHunks = true
 				break
 			}
@@ -397,4 +415,18 @@ func buildPatch(commit models.CommitUnit, hunkMap map[string]models.Hunk) string
 	}
 
 	return sb.String()
+}
+
+// extractOldStart parses the old file start line from a hunk header.
+// e.g. "@@ -50,6 +50,6 @@" returns 50.
+func extractOldStart(header string) int {
+	parts := strings.Split(header, " ")
+	if len(parts) >= 2 && strings.HasPrefix(parts[1], "-") {
+		numStr := strings.Split(parts[1][1:], ",")[0]
+		n, err := strconv.Atoi(numStr)
+		if err == nil {
+			return n
+		}
+	}
+	return 0
 }
