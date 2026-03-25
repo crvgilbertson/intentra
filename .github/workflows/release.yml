@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Version to release (e.g. 0.5.2)"
+        description: "Version to release (e.g. 0.6.1)"
         required: true
       prerelease:
         description: "Pre-release suffix (e.g. rc1). Leave empty for stable."
@@ -18,8 +18,38 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  verify:
+    name: Release Verify
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Build
+        run: go build ./...
+
+      - name: Test
+        run: go test ./... -timeout 120s
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Lint
+        uses: golangci/golangci-lint-action@v9
+        with:
+          version: latest
+
+      - name: Architecture boundaries
+        run: go run scripts/check-imports.go
+
   tag:
     name: Create Tag
+    needs: [verify]
     if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     permissions:
@@ -35,7 +65,7 @@ jobs:
         run: |
           VERSION="${{ github.event.inputs.version }}"
           if ! echo "$VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then
-            echo "FAIL: version must be semver (e.g. 0.5.2), got: $VERSION"
+            echo "FAIL: version must be semver (e.g. 0.6.1), got: $VERSION"
             exit 1
           fi
 
@@ -73,8 +103,8 @@ jobs:
 
   goreleaser:
     name: Build & Publish
-    needs: [tag]
-    if: always() && (needs.tag.result == 'success' || needs.tag.result == 'skipped')
+    needs: [verify, tag]
+    if: always() && needs.verify.result == 'success' && (needs.tag.result == 'success' || needs.tag.result == 'skipped')
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -86,11 +116,22 @@ jobs:
 
       - uses: actions/setup-go@v6
         with:
-          go-version: "1.24"
+          go-version-file: go.mod
+
+      - name: Verify release secrets
+        run: |
+          if [ -z "${{ secrets.GITHUB_TOKEN }}" ]; then
+            echo "FAIL: GITHUB_TOKEN is required for release publishing"
+            exit 1
+          fi
+          if [ -z "${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}" ]; then
+            echo "FAIL: HOMEBREW_TAP_GITHUB_TOKEN is required for Homebrew publishing"
+            exit 1
+          fi
 
       - uses: goreleaser/goreleaser-action@v7
         with:
-          version: latest
+          version: "~> v2"
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -125,3 +166,13 @@ jobs:
             exit 1
           fi
           echo "Smoke test passed: $REPORTED"
+
+      - name: Verify Windows asset exists
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${{ steps.resolve.outputs.tag }}"
+          ASSET="intentra_${TAG#v}_windows_amd64.zip"
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern "$ASSET"
+          test -f "$ASSET" || { echo "FAIL: missing $ASSET"; exit 1; }
+          echo "Windows asset present: $ASSET"
