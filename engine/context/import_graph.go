@@ -16,10 +16,10 @@ import (
 // ImportGraph holds package dependency data for ordering commits.
 // Built via go list when the repo is a Go module.
 type ImportGraph struct {
-	FileToPackage   map[string]string            // file path (slash) -> import path
-	PackageImports  map[string][]string          // pkg -> direct imports
-	PackageLayer    map[string]int               // pkg -> topological layer (0 = leaves)
-	OrderingStrategy string                      // "import_graph" or "fallback"
+	FileToPackage    map[string]string   // file path (slash) -> import path
+	PackageImports   map[string][]string // pkg -> direct imports
+	PackageLayer     map[string]int      // pkg -> topological layer (0 = leaves)
+	OrderingStrategy string              // "import_graph" or "fallback"
 }
 
 // goListPackage is the JSON shape from go list -json.
@@ -45,8 +45,8 @@ func BuildImportGraph(ctx context.Context, root string) (*ImportGraph, error) {
 	}
 
 	g := &ImportGraph{
-		FileToPackage:  make(map[string]string),
-		PackageImports: make(map[string][]string),
+		FileToPackage:    make(map[string]string),
+		PackageImports:   make(map[string][]string),
 		OrderingStrategy: "import_graph",
 	}
 
@@ -123,40 +123,34 @@ func OrderCommitsByImportGraph(plan *models.CommitPlan, hunks []models.Hunk, g *
 	if g == nil || len(g.FileToPackage) == 0 {
 		return
 	}
+	_ = hunks
 
-	commitPackages := make([][]string, len(plan.Commits))
-	commitLayers := make([]int, len(plan.Commits))
+	commitLayers := make(map[string]int, len(plan.Commits))
 
-	for i, c := range plan.Commits {
-		pkgSet := make(map[string]bool)
+	for _, c := range plan.Commits {
 		minLayer := 999
 		for _, hid := range c.Hunks {
 			filePath := hunkToFile[hid]
 			pkg := g.FileToPackage[filePath]
 			if pkg != "" {
-				pkgSet[pkg] = true
 				if l, ok := g.PackageLayer[pkg]; ok && l < minLayer {
 					minLayer = l
 				}
 			}
 		}
-		var pkgs []string
-		for p := range pkgSet {
-			pkgs = append(pkgs, p)
-		}
-		sort.Strings(pkgs)
-		commitPackages[i] = pkgs
 		if minLayer == 999 {
 			minLayer = 0
 		}
-		commitLayers[i] = minLayer
+		commitLayers[c.ID] = minLayer
 	}
 
 	sort.SliceStable(plan.Commits, func(i, j int) bool {
-		if commitLayers[i] != commitLayers[j] {
-			return commitLayers[i] < commitLayers[j]
+		li := commitLayers[plan.Commits[i].ID]
+		lj := commitLayers[plan.Commits[j].ID]
+		if li != lj {
+			return li < lj
 		}
-		return i < j
+		return false
 	})
 
 	for i := range plan.Commits {
