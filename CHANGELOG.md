@@ -5,6 +5,29 @@ All notable changes to Intentra are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.0] -- Change Intelligence & Reliability
+
+### Added
+- `intentra release-notes`: derive release notes from the cached plan with grouped changes, breaking-change sections, and deterministic risk summaries.
+- `intentra changelog`: generate changelog-ready output from the cached plan, including version/since metadata and linked ticket references.
+- `intentra risk-report`: summarize risky commits, aggregate risk level, and sensitive areas touched from the cached plan.
+- Lightweight ticket linking across `plan`, `apply`, `pr`, `release-notes`, `changelog`, and `risk-report` via `--ticket PROJ-123` and branch-name detection.
+- New `engine/artifacts` package to keep release-facing report generation deterministic and reusable outside the CLI layer.
+- Focused tests for artifact generation, ticket enrichment, and PR ticket propagation.
+
+### Changed
+- README rewritten to focus on the actual v0.6 command surface, shorter onboarding, and pointers to deeper docs instead of carrying the full architecture book inline.
+- PR generation can now include ticket metadata from explicit flags, cached plan footers, or branch-name detection.
+- Initial-commit plans now use the full prompt fingerprint, keeping cache invalidation behavior consistent with normal plans.
+- CI and security workflows now use Go 1.25 to pick up standard-library security fixes flagged by `govulncheck`.
+
+### Fixed
+- `BuildContext` now captures staged files more reliably in brand-new repositories where `HEAD` does not exist yet.
+- Synthetic diffs for untracked files now preserve empty new files instead of silently dropping them.
+- Diff parsing now retains empty new files as synthetic hunks so they survive planning and replay.
+- Import-graph commit ordering no longer relies on layer indexes that can drift during sort; positive ordering coverage was added.
+- Batched planner fallback now respects `max_commits` when merge reconciliation fails, rather than concatenating every batch group unchecked.
+
 ## [0.5.7] -- Executor Resiliency
 
 ### Fixed
