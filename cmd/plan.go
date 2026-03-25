@@ -24,9 +24,10 @@ import (
 var defaultPlanFile = config.PlanPath
 
 var (
-	jsonOutput   bool
-	snapshotFile string
+	jsonOutput    bool
+	snapshotFile  string
 	analyzeOutput bool
+	planTicket    string
 )
 
 var planCmd = &cobra.Command{
@@ -40,6 +41,7 @@ func init() {
 	planCmd.Flags().BoolVar(&jsonOutput, "json", false, "output raw CommitPlan JSON")
 	planCmd.Flags().BoolVar(&analyzeOutput, "analyze", false, "output detailed per-commit diagnostics")
 	planCmd.Flags().StringVar(&snapshotFile, "snapshot", "", "export reproducible plan snapshot to file")
+	planCmd.Flags().StringVar(&planTicket, "ticket", "", "ticket reference to attach to generated commits (for example PROJ-123)")
 	rootCmd.AddCommand(planCmd)
 }
 
@@ -103,6 +105,10 @@ func runPlan(cmd *cobra.Command, args []string) error {
 		if r := validators.ScoreCommitRisk(cp.Commits[i], hunkToFile, cfg.Engine.Risk); r != nil {
 			cp.Commits[i].Risk = r
 		}
+	}
+
+	if ticket := resolveTicketRef(planTicket, cp); ticket != nil {
+		addTicketFooter(cp, ticket.ID)
 	}
 
 	if err := savePlan(cp); err != nil {
@@ -282,14 +288,14 @@ func writeSnapshot(cp *models.CommitPlan, ec *enginectx.EngineContext) error {
 		Provider:          cfg.AI.Provider,
 		Model:             cfg.AI.Model,
 		Config: models.SnapshotConfig{
-			Provider:          cfg.AI.Provider,
-			Model:             cfg.AI.Model,
-			Temperature:       cfg.AI.Temperature,
-			MaxCommits:        cfg.Engine.MaxCommits,
-			MaxHunkLines:      cfg.AI.MaxHunkLines,
-			BatchThreshold:    cfg.Engine.BatchThreshold,
-			AtomicityProfile:  atomicity.NormalizeProfile(cfg.Engine.Atomicity.Profile),
-			Style:             cfg.Style,
+			Provider:         cfg.AI.Provider,
+			Model:            cfg.AI.Model,
+			Temperature:      cfg.AI.Temperature,
+			MaxCommits:       cfg.Engine.MaxCommits,
+			MaxHunkLines:     cfg.AI.MaxHunkLines,
+			BatchThreshold:   cfg.Engine.BatchThreshold,
+			AtomicityProfile: atomicity.NormalizeProfile(cfg.Engine.Atomicity.Profile),
+			Style:            cfg.Style,
 		},
 		DiffFingerprint: cp.DiffFingerprint,
 		HunkCount:       len(ec.Hunks),
@@ -338,4 +344,3 @@ func loadCachedPlan() (*models.CommitPlan, error) {
 	}
 	return &cp, nil
 }
-

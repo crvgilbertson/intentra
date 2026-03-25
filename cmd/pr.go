@@ -9,13 +9,15 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/crvgilbertson/intentra/cmd/ui"
+	"github.com/crvgilbertson/intentra/engine/artifacts"
 	"github.com/crvgilbertson/intentra/engine/models"
 )
 
 var (
-	prTitle string
-	prBase  string
-	prDraft bool
+	prTitle  string
+	prBase   string
+	prDraft  bool
+	prTicket string
 )
 
 var prCmd = &cobra.Command{
@@ -29,6 +31,7 @@ func init() {
 	prCmd.Flags().StringVar(&prTitle, "title", "", "PR title (auto-generated if omitted)")
 	prCmd.Flags().StringVar(&prBase, "base", "", "base branch (default: first protected branch from config, or main)")
 	prCmd.Flags().BoolVar(&prDraft, "draft", false, "create as draft PR")
+	prCmd.Flags().StringVar(&prTicket, "ticket", "", "ticket reference to include (for example PROJ-123)")
 	rootCmd.AddCommand(prCmd)
 }
 
@@ -64,7 +67,7 @@ func runPR(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("push failed — cannot create PR without pushing")
 	}
 
-	title, body := buildPRContent(base)
+	title, body := buildPRContent(base, prTicket)
 
 	if prTitle != "" {
 		title = prTitle
@@ -101,12 +104,12 @@ func runPR(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func buildPRContent(base string) (title, body string) {
+func buildPRContent(base, explicitTicket string) (title, body string) {
 	cached, err := loadCachedPlan()
 	if err == nil && len(cached.Commits) > 0 && planMatchesHead(cached) {
-		return buildPRFromPlan(cached)
+		return buildPRFromPlan(cached, resolveTicketRef(explicitTicket, cached))
 	}
-	return buildPRFromGitLog(base)
+	return buildPRFromGitLog(base, resolveTicketRef(explicitTicket, nil))
 }
 
 // planMatchesHead returns true if the cached plan's base ref is an ancestor
@@ -121,7 +124,7 @@ func planMatchesHead(cp *models.CommitPlan) bool {
 	return exec.CommandContext(ctx, "git", "merge-base", "--is-ancestor", cp.BaseRef, "HEAD").Run() == nil
 }
 
-func buildPRFromPlan(cp *models.CommitPlan) (title, body string) {
+func buildPRFromPlan(cp *models.CommitPlan, ticket *artifacts.TicketRef) (title, body string) {
 	if len(cp.Commits) == 1 {
 		title = cp.Commits[0].FullSubject()
 	} else {
@@ -130,6 +133,9 @@ func buildPRFromPlan(cp *models.CommitPlan) (title, body string) {
 	}
 
 	var sb strings.Builder
+	if ticket != nil {
+		fmt.Fprintf(&sb, "Ticket: %s\n\n", ticket.ID)
+	}
 	sb.WriteString("## Changes\n\n")
 	for i, c := range cp.Commits {
 		fmt.Fprintf(&sb, "%d. **%s**: %s\n", i+1, c.FullSubject(), commitFileList(c))
@@ -170,7 +176,7 @@ func commitFileList(c models.CommitUnit) string {
 
 const maxPRLogCommits = 100
 
-func buildPRFromGitLog(base string) (title, body string) {
+func buildPRFromGitLog(base string, ticket *artifacts.TicketRef) (title, body string) {
 	rangeSpec := base + "..HEAD"
 	ctx, cancel := localCtx()
 	defer cancel()
@@ -198,6 +204,9 @@ func buildPRFromGitLog(base string) (title, body string) {
 	}
 
 	var sb strings.Builder
+	if ticket != nil {
+		fmt.Fprintf(&sb, "Ticket: %s\n\n", ticket.ID)
+	}
 	sb.WriteString("## Commits\n\n")
 	for _, line := range lines {
 		fmt.Fprintf(&sb, "- %s\n", line)
