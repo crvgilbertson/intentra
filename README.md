@@ -1076,35 +1076,75 @@ Theme: *Engine deepening, not surface growth*
 - **`intentra plan --analyze`**: detailed per-commit diagnostics (hunks, files, rationale, risk). Use `--analyze --json` for structured output.
 - **Replay fixture corpus**: `testdata/snapshots/v0.5/` fixtures with CI enforcement.
 
-### v0.6 — Change Intelligence (Bridging Dev → PM)
+### v0.6 — Change Intelligence & AI Foundations
 
-Theme: *PM visibility from cached plans — no extra LLM calls*
+Theme: *PM visibility from cached plans + foundational AI reliability*
+
+**Change Intelligence**
 
 - **`intentra release-notes`**: Features, fixes, refactors, breaking changes, risk summary, high-risk areas touched — derived from cached plan + commit metadata
 - **`intentra changelog --since v0.5.0`**: Structured CHANGELOG.md entries, version sections, risk indicators, linked tickets
 - **Ticket linking (lightweight)**: detect ticket pattern from branch name; `--ticket PROJ-123` flag; ticket footer in commits; included in release notes
 - **`intentra risk-report`**: high-risk commits, sensitive areas touched, database/auth/config changes, aggregate risk score for release
 
-### v0.7 — Policy Enforcement Mode (Team Level)
+**AI Reliability (Foundations)**
 
-Theme: *Helper → guardrail*
+- **Initial Commit Short-Circuit**: instantly auto-generate a `chore: initial commit` plan (1.0 confidence) if the repository has 0 commits, entirely bypassing the LLM pipeline to save time, tokens, and prevent fragmented initial histories. Can be bypassed with an undocumented `ai.disable_initial_commit_heuristic: true` config flag if needed.
+- **Token usage tracking**: capture `input_tokens`, `output_tokens`, and estimated cost from API responses; surface in `intentra explain` and the plan JSON `trace.token_usage` field
+- **Native structured output**: use OpenAI's `response_format: { type: "json_schema" }` and Anthropic's tool-use for structured extraction instead of prompt-based JSON generation — virtually eliminates parsing failures
+- **Prompt caching**: mark system prompt + schema as cacheable (OpenAI `cached` flag, Anthropic cache control headers) — reduces input token costs by ~90% on repeated `plan` calls
+- **Output sanitization**: strip markdown fences, BOM markers, trailing commas, and common LLM artifacts from raw output before JSON parsing — reduces retry rate on otherwise-valid responses
+- **Pre-call token estimation**: estimate token usage from diff size before making API calls; warn if estimated cost exceeds a configurable threshold (`ai.cost_warning_threshold`)
+
+### v0.7 — Policy Enforcement & AI Performance
+
+Theme: *Helper → guardrail, with faster AI pipeline*
+
+**Policy Enforcement**
 
 - **`intentra ci-check`**: fail build if confidence below threshold, risk above threshold, atomicity profile violated, overlapping files, disallowed commit types
 - **Config presets**: `profile: monorepo`, `profile: strict-release`, `profile: fast-dev` — bundle atomicity, confidence, and risk thresholds for low-friction adoption
 
-### v0.8 — Artifact Intelligence
+**AI Performance**
 
-Theme: *Value surface without bloating workflow*
+- **Parallel messaging pass**: fire all Pass 2 (commit message generation) calls concurrently via `errgroup` — on a 10-commit plan, reduces wall-clock time from ~30s to ~5s
+- **Rate limit handling with exponential backoff**: detect HTTP 429 and provider-specific rate limit headers; retry with jitter rather than hard-failing
+- **Per-call timeout**: individual timeout per LLM call (`ai.call_timeout`) separate from the overall planning timeout (`ai.timeout`) — prevents a single slow call from consuming the entire budget
+
+### v0.8 — Artifact Intelligence & AI Resilience
+
+Theme: *Value surface + bulletproof AI pipeline*
+
+**Artifact Intelligence**
 
 - **Enhanced `intentra pr`**: structured PR description, risk summary, commit rationale, review checklist
 - **Review checklist generator**: "Auth changed → check token expiry"; "DB migration → verify rollback"; "Config touched → verify defaults" — from risk signals
 
-### v0.9 — Repository Intelligence
+**AI Resilience**
 
-Theme: *Strategic, opt-in*
+- **Provider failover**: configure a secondary provider that activates automatically if the primary returns errors or timeouts — `ai.fallback_provider` / `ai.fallback_model`
+- **Model escalation**: start with a cheaper model (e.g., `gpt-4.1-mini`); if plan confidence is below `ai.escalation_threshold`, automatically re-plan with a more capable model (`ai.escalation_model`) — saves cost on routine diffs while ensuring quality on complex ones
+- **Cost budgets**: set `ai.max_cost_per_plan` to cap total spend; abort planning with a clear message if estimated remaining calls would exceed the budget
+- **Semantic validation layer**: beyond structural JSON validation, verify that commit types align with hunk content (e.g., `fix` type should reference changed behavior, not just whitespace), flagging suspicious mismatches in the confidence score
 
-- **Historical pattern learning**: which files change together, high-churn areas, typical commit count per feature — improve clustering heuristics
-- **Style fingerprinting**: learn subject style and type/scope usage from history; adjust messaging prompts to match team voice
+### v0.9 — Executor Hardening, Multi-Language & Advanced AI
+
+Theme: *Patch correctness + advanced AI capabilities for complex diffs*
+
+**Executor Hardening**
+
+- **`\ No newline at end of file` handling**: emit and parse the marker correctly in diff parser and patch builder so files without trailing newlines apply cleanly
+- **`--3way` fallback**: when `git apply --cached` fails due to context drift, attempt `git apply --3way --cached` with clear messaging before aborting
+
+**Multi-Language**
+
+- **Multi-language ordering**: add at least one non-Go ordering strategy (e.g., TypeScript via `tsconfig.json` references, or Python via import analysis) alongside the existing Go import graph
+
+**Advanced AI**
+
+- **Extended thinking / reasoning models**: detect when the configured model supports chain-of-thought (o3, Claude extended thinking, DeepSeek R1) and enable it for the clustering pass — dramatically improves grouping quality on large, tangled diffs
+- **Deterministic temperature pinning**: force `temperature: 0` for the clustering pass regardless of config to maximize reproducibility; allow user-configured temperature only for the messaging pass where creativity is acceptable
+- **Response fingerprinting**: hash the raw LLM response and store it in the plan trace — enables exact reproducibility verification and debugging of non-deterministic behavior across runs
 
 ### v1.0.0 — Stable Platform
 
@@ -1114,6 +1154,19 @@ Theme: *Strategic, opt-in*
 - CLI flags stable
 - Config schema stable
 
+**Patch Correctness Gates**
+
+- `\ No newline at end of file` fully supported
+- `--3way` fallback for context-drifted patches
+- ≥2 language ordering strategies shipping
+
+**AI Reliability Gates**
+
+- Native structured output for all providers
+- Provider failover tested and documented
+- Token tracking and cost budgets shipping
+- All LLM outputs sanitized before parsing
+
 **Extensibility**
 
 - Plugin interface: custom risk rules, validators, planners
@@ -1122,6 +1175,15 @@ Theme: *Strategic, opt-in*
 
 - Official CI action: `uses: crvgilbertson/intentra-action@v1`
 - Documentation site: architecture, policy, replay explanation
+
+### Post-v1.0 — Repository Intelligence & AI Research
+
+Theme: *Strategic, opt-in — does not block stable release*
+
+- **Historical pattern learning**: which files change together, high-churn areas, typical commit count per feature — improve clustering heuristics
+- **Style fingerprinting**: learn subject style and type/scope usage from history; adjust messaging prompts to match team voice
+- **Embedding-based pre-clustering**: for massive diffs (100+ hunks), compute embeddings on each hunk and pre-group by cosine similarity before sending to the LLM — reduces token cost and dropped-hunk rate by orders of magnitude
+- **Multi-model ensemble**: run clustering through multiple models in parallel and reconcile overlapping assignments — highest reliability at highest cost, opt-in for critical releases
 
 ---
 
