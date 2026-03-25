@@ -19,7 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - README rewritten to focus on the actual v0.6 command surface, shorter onboarding, and pointers to deeper docs instead of carrying the full architecture book inline.
 - PR generation can now include ticket metadata from explicit flags, cached plan footers, or branch-name detection.
 - Initial-commit plans now use the full prompt fingerprint, keeping cache invalidation behavior consistent with normal plans.
-- CI and security workflows now use Go 1.25 to pick up standard-library security fixes flagged by `govulncheck`.
+- CI and security workflows now use Go 1.25.8 to pick up standard-library security fixes flagged by `govulncheck`.
 
 ### Fixed
 - `BuildContext` now captures staged files more reliably in brand-new repositories where `HEAD` does not exist yet.
