@@ -277,7 +277,3 @@ func gitCommandInDir(ctx context.Context, dir string, args ...string) (string, e
 	result := strings.ReplaceAll(string(out), "\r\n", "\n")
 	return result, nil
 }
-
-func gitCommand(ctx context.Context, args ...string) (string, error) {
-	return gitCommandInDir(ctx, "", args...)
-}
