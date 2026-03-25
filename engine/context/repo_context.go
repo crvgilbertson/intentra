@@ -19,6 +19,7 @@ type EngineContext struct {
 	Hunks         []models.Hunk
 	RecentCommits []string
 	Config        config.EngineConfig
+	InitialCommit bool // true when the repo has zero commits (HEAD does not exist)
 }
 
 // BuildContext collects git state and returns an EngineContext.
@@ -27,11 +28,28 @@ type EngineContext struct {
 func BuildContext(ctx context.Context, cfg config.EngineConfig) (EngineContext, error) {
 	root, _ := repoRoot(ctx)
 
-	// Use "diff HEAD" to capture both staged and unstaged changes.
-	// Run from repo root so paths are consistent regardless of CWD.
-	trackedDiff, err := gitCommandInDir(ctx, root, "diff", "HEAD")
+	// Detect whether the repo has any commits at all.
+	initialCommit := false
+	baseRef, err := gitCommandInDir(ctx, root, "rev-parse", "HEAD")
 	if err != nil {
-		trackedDiff = ""
+		initialCommit = true
+		baseRef = "WORKING_TREE"
+	}
+	baseRef = strings.TrimSpace(baseRef)
+
+	var trackedDiff string
+	if initialCommit {
+		trackedDiff, err = collectInitialCommitDiff(ctx, root)
+		if err != nil {
+			return EngineContext{}, fmt.Errorf("collecting initial commit diff: %w", err)
+		}
+	} else {
+		// Use "diff HEAD" to capture both staged and unstaged changes.
+		// Run from repo root so paths are consistent regardless of CWD.
+		trackedDiff, err = gitCommandInDir(ctx, root, "diff", "HEAD")
+		if err != nil {
+			trackedDiff = ""
+		}
 	}
 
 	untrackedDiff, err := collectUntrackedDiff(ctx, root)
@@ -50,7 +68,7 @@ func BuildContext(ctx context.Context, cfg config.EngineConfig) (EngineContext, 
 		return EngineContext{}, fmt.Errorf("diff size %d KB exceeds max_diff_kb (%d KB)", len(fullDiff)/1024, cfg.AI.MaxDiffKB)
 	}
 
-	logOut, err := gitCommand(ctx, "log", "--oneline", "-n", "10")
+	logOut, err := gitCommandInDir(ctx, root, "log", "--oneline", "-n", "10")
 	if err != nil {
 		logOut = ""
 	}
@@ -63,19 +81,30 @@ func BuildContext(ctx context.Context, cfg config.EngineConfig) (EngineContext, 
 		}
 	}
 
-	baseRef, err := gitCommand(ctx, "rev-parse", "HEAD")
-	if err != nil {
-		baseRef = "WORKING_TREE"
-	}
-	baseRef = strings.TrimSpace(baseRef)
-
 	return EngineContext{
 		BaseRef:       baseRef,
 		RootPath:      root,
 		Hunks:         hunks,
 		RecentCommits: commits,
 		Config:        cfg,
+		InitialCommit: initialCommit,
 	}, nil
+}
+
+// collectInitialCommitDiff gathers staged and unstaged changes when HEAD does
+// not exist yet. This is needed because "git diff HEAD" cannot run before the
+// first commit, but we still want BuildContext to see staged files and
+// worktree edits relative to the index.
+func collectInitialCommitDiff(ctx context.Context, root string) (string, error) {
+	stagedDiff, err := gitCommandInDir(ctx, root, "diff", "--cached", "--root")
+	if err != nil {
+		stagedDiff = ""
+	}
+	unstagedDiff, err := gitCommandInDir(ctx, root, "diff")
+	if err != nil {
+		unstagedDiff = ""
+	}
+	return stagedDiff + unstagedDiff, nil
 }
 
 // collectUntrackedDiff finds untracked files (respecting .gitignore) and
@@ -106,32 +135,51 @@ func collectUntrackedDiff(ctx context.Context, root string) (string, error) {
 			continue
 		}
 
+		info, err := os.Stat(absPath)
+		if err != nil {
+			continue
+		}
 		content, err := os.ReadFile(absPath)
 		if err != nil {
 			continue
 		}
-		if len(content) == 0 {
-			continue
-		}
 
-		text := strings.ReplaceAll(string(content), "\r\n", "\n")
-		hasTrailingNewline := strings.HasSuffix(text, "\n")
-		text = strings.TrimRight(text, "\n")
-		lines := strings.Split(text, "\n")
-		fmt.Fprintf(&sb, "diff --git a/%s b/%s\n", filePath, filePath)
-		fmt.Fprintf(&sb, "new file mode 100644\n")
-		fmt.Fprintf(&sb, "--- /dev/null\n")
-		fmt.Fprintf(&sb, "+++ b/%s\n", filePath)
-		fmt.Fprintf(&sb, "@@ -0,0 +1,%d @@\n", len(lines))
-		for _, line := range lines {
-			fmt.Fprintf(&sb, "+%s\n", line)
-		}
-		if !hasTrailingNewline {
-			sb.WriteString("\\ No newline at end of file\n")
-		}
+		sb.WriteString(buildSyntheticNewFileDiff(filePath, info.Mode(), content))
 	}
 
 	return sb.String(), nil
+}
+
+func buildSyntheticNewFileDiff(filePath string, mode os.FileMode, content []byte) string {
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "diff --git a/%s b/%s\n", filePath, filePath)
+	fmt.Fprintf(&sb, "new file mode %s\n", gitFileMode(mode))
+	fmt.Fprintf(&sb, "--- /dev/null\n")
+	fmt.Fprintf(&sb, "+++ b/%s\n", filePath)
+
+	text := strings.ReplaceAll(string(content), "\r\n", "\n")
+	hasTrailingNewline := strings.HasSuffix(text, "\n")
+	text = strings.TrimRight(text, "\n")
+	if text == "" {
+		return sb.String()
+	}
+
+	lines := strings.Split(text, "\n")
+	fmt.Fprintf(&sb, "@@ -0,0 +1,%d @@\n", len(lines))
+	for _, line := range lines {
+		fmt.Fprintf(&sb, "+%s\n", line)
+	}
+	if !hasTrailingNewline {
+		sb.WriteString("\\ No newline at end of file\n")
+	}
+	return sb.String()
+}
+
+func gitFileMode(mode os.FileMode) string {
+	if mode&0111 != 0 {
+		return "100755"
+	}
+	return "100644"
 }
 
 func isBinaryFile(path string) bool {

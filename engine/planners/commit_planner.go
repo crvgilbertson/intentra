@@ -218,19 +218,49 @@ func splitIntoBatches(units []fileUnit, batchSize int) [][]fileUnit {
 	return batches
 }
 
-func concatenateBatchGroups(results []batchResult) ClusteringResponse {
+func concatenateBatchGroups(results []batchResult, maxCommits int) ClusteringResponse {
 	var groups []ClusterGroup
 	counter := 1
 	for _, r := range results {
 		for _, g := range r.cr.Groups {
 			groups = append(groups, ClusterGroup{
-				ID:      fmt.Sprintf("g%d", counter),
-				HunkIDs: g.HunkIDs,
+				ID:        fmt.Sprintf("g%d", counter),
+				HunkIDs:   g.HunkIDs,
+				Rationale: g.Rationale,
 			})
 			counter++
 		}
 	}
-	return ClusteringResponse{Groups: groups}
+	return capClusteringGroups(ClusteringResponse{Groups: groups}, maxCommits)
+}
+
+func capClusteringGroups(cr ClusteringResponse, maxCommits int) ClusteringResponse {
+	if maxCommits <= 0 || len(cr.Groups) <= maxCommits {
+		return cr
+	}
+
+	kept := make([]ClusterGroup, maxCommits)
+	copy(kept, cr.Groups[:maxCommits])
+
+	for i, overflow := range cr.Groups[maxCommits:] {
+		target := maxCommits - 1 - (i % maxCommits)
+		if target < 0 {
+			target = maxCommits - 1
+		}
+		kept[target].HunkIDs = append(kept[target].HunkIDs, overflow.HunkIDs...)
+		if overflow.Rationale != "" && !strings.Contains(kept[target].Rationale, overflow.Rationale) {
+			if kept[target].Rationale == "" {
+				kept[target].Rationale = overflow.Rationale
+			} else {
+				kept[target].Rationale += "; " + overflow.Rationale
+			}
+		}
+	}
+
+	for i := range kept {
+		kept[i].ID = fmt.Sprintf("g%d", i+1)
+	}
+	return ClusteringResponse{Groups: kept}
 }
 
 // ---------------------------------------------------------------------------
@@ -260,6 +290,12 @@ func (p *CommitPlanner) Name() string {
 func (p *CommitPlanner) BuildPlan(ctx context.Context, ec enginectx.EngineContext) (models.Plan, error) {
 	if len(ec.Hunks) == 0 {
 		return nil, fmt.Errorf("no hunks to plan")
+	}
+
+	// Initial-commit short-circuit: if the repo has zero commits, bypass the
+	// entire LLM pipeline and produce a deterministic single-commit plan.
+	if ec.InitialCommit && !ec.Config.AI.DisableInitialCommitHeuristic {
+		return buildInitialCommitPlan(ec), nil
 	}
 
 	if ec.Config.AI.Timeout > 0 {
@@ -497,7 +533,7 @@ func (p *CommitPlanner) clusterBatched(ctx context.Context, ec enginectx.EngineC
 	p.progress(fmt.Sprintf("Merging %d batches...", len(results)))
 	merged, err := p.mergeBatchGroups(ctx, ec, results, maxCommits)
 	if err != nil {
-		merged = concatenateBatchGroups(results)
+		merged = concatenateBatchGroups(results, maxCommits)
 	}
 
 	allUnits := make([]fileUnit, 0, len(units))
@@ -1201,4 +1237,49 @@ func packageLayer(dir string) int {
 // MarshalPlan serializes a CommitPlan to JSON.
 func MarshalPlan(plan models.CommitPlan) ([]byte, error) {
 	return json.MarshalIndent(plan, "", "  ")
+}
+
+// buildInitialCommitPlan produces a deterministic single-commit plan when the
+// repo has zero commits. This bypasses the entire LLM pipeline — no tokens
+// spent, no latency, and the result matches developer convention.
+func buildInitialCommitPlan(ec enginectx.EngineContext) *models.CommitPlan {
+	hunkIDs := make([]string, len(ec.Hunks))
+	for i, h := range ec.Hunks {
+		hunkIDs[i] = h.HunkID
+	}
+
+	overall := 1.0
+	return &models.CommitPlan{
+		SchemaVersion:     models.CurrentSchemaVersion,
+		ToolVersion:       internal.Version,
+		BaseRef:           ec.BaseRef,
+		DiffFingerprint:   models.DiffFingerprintFromHunks(ec.Hunks),
+		PromptFingerprint: PromptFingerprint(),
+		Style:             ec.Config.Style,
+		Commits: []models.CommitUnit{
+			{
+				ID:        "c1",
+				Type:      "chore",
+				Subject:   "initial commit",
+				Hunks:     hunkIDs,
+				Rationale: "Initial commit — all files grouped into a single commit (LLM bypassed)",
+			},
+		},
+		Confidence: &models.PlanConfidence{
+			Overall: overall,
+			Level:   "high",
+			Components: models.ConfidenceComponents{
+				Coverage:       1.0,
+				Entanglement:   1.0,
+				RepairActivity: 1.0,
+				Overlap:        1.0,
+				ReorderPenalty: 1.0,
+			},
+		},
+		Trace: &models.PipelineTrace{
+			Strategy:      "initial_commit",
+			CommitsBefore: 1,
+			CommitsAfter:  1,
+		},
+	}
 }

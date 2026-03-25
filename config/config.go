@@ -21,14 +21,15 @@ var (
 )
 
 type AIConfig struct {
-	Provider     string  `yaml:"provider"`
-	Model        string  `yaml:"model"`
-	Temperature  float64 `yaml:"temperature"`
-	MaxDiffKB    int     `yaml:"max_diff_kb"`
-	BaseURL      string  `yaml:"base_url,omitempty"`
-	MaxRetries   int     `yaml:"max_retries"`
-	Timeout      int     `yaml:"timeout"`
-	MaxHunkLines int     `yaml:"max_hunk_lines"`
+	Provider                      string  `yaml:"provider"`
+	Model                         string  `yaml:"model"`
+	Temperature                   float64 `yaml:"temperature"`
+	MaxDiffKB                     int     `yaml:"max_diff_kb"`
+	BaseURL                       string  `yaml:"base_url,omitempty"`
+	MaxRetries                    int     `yaml:"max_retries"`
+	Timeout                       int     `yaml:"timeout"`
+	MaxHunkLines                  int     `yaml:"max_hunk_lines"`
+	DisableInitialCommitHeuristic bool    `yaml:"disable_initial_commit_heuristic,omitempty"`
 }
 
 type RiskAreaRule struct {
