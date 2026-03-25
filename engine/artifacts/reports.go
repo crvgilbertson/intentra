@@ -1,7 +1,6 @@
 package artifacts
 
 import (
-	"fmt"
 	"sort"
 
 	"github.com/crvgilbertson/intentra/engine/models"
@@ -324,6 +323,6 @@ func sectionForType(commitType string) (string, string) {
 	case "chore":
 		return "chore", "Maintenance"
 	default:
-		return "other", fmt.Sprintf("Other Changes")
+		return "other", "Other Changes"
 	}
 }
