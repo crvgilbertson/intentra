@@ -31,11 +31,12 @@ func ParseDiff(raw string) []models.Hunk {
 		fileHunks := splitHunks(section)
 
 		if len(fileHunks) == 0 {
-			// Metadata-only change (mode change, rename without content diff).
+			// Metadata-only or empty-file change.
 			// Create a synthetic hunk so it isn't silently dropped.
-			if (oldMode != "" && newMode != "") || renamedFrom != "" {
+			if newFile || deletedFile || (oldMode != "" && newMode != "") || renamedFrom != "" {
 				hunk := models.Hunk{
 					FilePath:    filePath,
+					NewFile:     newFile,
 					DeletedFile: deletedFile,
 					RenamedFrom: renamedFrom,
 					OldMode:     oldMode,

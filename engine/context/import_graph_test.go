@@ -111,3 +111,48 @@ func TestComputePackageLayers_Deterministic(t *testing.T) {
 		t.Errorf("cmd: got %d, want 2", layer["mypkg/cmd"])
 	}
 }
+
+func TestOrderCommitsByImportGraph_ReordersByLayer(t *testing.T) {
+	plan := &models.CommitPlan{
+		Commits: []models.CommitUnit{
+			{ID: "c1", Subject: "cmd changes", Hunks: []string{"h1"}},
+			{ID: "c2", Subject: "engine changes", Hunks: []string{"h2"}},
+			{ID: "c3", Subject: "model changes", Hunks: []string{"h3"}},
+		},
+	}
+
+	graph := &ImportGraph{
+		FileToPackage: map[string]string{
+			"cmd/root.go":            "example/cmd",
+			"engine/service.go":      "example/engine",
+			"engine/models/types.go": "example/models",
+		},
+		PackageLayer: map[string]int{
+			"example/cmd":    2,
+			"example/engine": 1,
+			"example/models": 0,
+		},
+	}
+
+	hunkToFile := map[string]string{
+		"h1": "cmd/root.go",
+		"h2": "engine/service.go",
+		"h3": "engine/models/types.go",
+	}
+
+	OrderCommitsByImportGraph(plan, nil, graph, hunkToFile)
+
+	if plan.Commits[0].Subject != "model changes" {
+		t.Fatalf("first commit = %q, want model changes", plan.Commits[0].Subject)
+	}
+	if plan.Commits[1].Subject != "engine changes" {
+		t.Fatalf("second commit = %q, want engine changes", plan.Commits[1].Subject)
+	}
+	if plan.Commits[2].Subject != "cmd changes" {
+		t.Fatalf("third commit = %q, want cmd changes", plan.Commits[2].Subject)
+	}
+	if plan.Commits[0].ID != "c1" || plan.Commits[1].ID != "c2" || plan.Commits[2].ID != "c3" {
+		t.Fatalf("expected IDs to be renumbered sequentially, got %s, %s, %s",
+			plan.Commits[0].ID, plan.Commits[1].ID, plan.Commits[2].ID)
+	}
+}

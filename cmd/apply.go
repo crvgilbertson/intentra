@@ -22,9 +22,10 @@ import (
 )
 
 var (
-	yesFlag          bool
-	forceFlag        bool
+	yesFlag           bool
+	forceFlag         bool
 	allowStalePrompts bool
+	applyTicket       string
 )
 
 var applyCmd = &cobra.Command{
@@ -38,6 +39,7 @@ func init() {
 	applyCmd.Flags().BoolVar(&yesFlag, "yes", false, "actually apply commits (default is dry-run)")
 	applyCmd.Flags().BoolVar(&forceFlag, "force", false, "apply even when plan confidence is low")
 	applyCmd.Flags().BoolVar(&allowStalePrompts, "allow-stale-prompts", false, "reuse cached plan even if prompt fingerprint changed")
+	applyCmd.Flags().StringVar(&applyTicket, "ticket", "", "ticket reference to attach to applied commits (for example PROJ-123)")
 	rootCmd.AddCommand(applyCmd)
 }
 
@@ -75,6 +77,9 @@ func runApply(cmd *cobra.Command, args []string) error {
 	cp, err := resolveCommitPlan(ctx, &ec)
 	if err != nil {
 		return err
+	}
+	if ticket := resolveTicketRef(applyTicket, cp); ticket != nil {
+		addTicketFooter(cp, ticket.ID)
 	}
 
 	if err := validators.ValidateCommitPlan(*cp, ec); err != nil {

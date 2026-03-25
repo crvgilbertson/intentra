@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/crvgilbertson/intentra/engine/artifacts"
 	"github.com/crvgilbertson/intentra/engine/models"
 )
 
@@ -16,7 +17,7 @@ func TestBuildPRFromPlan_SingleCommit(t *testing.T) {
 		},
 	}
 
-	title, body := buildPRFromPlan(cp)
+	title, body := buildPRFromPlan(cp, nil)
 
 	if title != "feat(auth): add login flow" {
 		t.Errorf("unexpected title: %q", title)
@@ -41,7 +42,7 @@ func TestBuildPRFromPlan_MultipleCommits(t *testing.T) {
 		},
 	}
 
-	title, body := buildPRFromPlan(cp)
+	title, body := buildPRFromPlan(cp, nil)
 
 	if !strings.HasPrefix(title, "3 changes:") {
 		t.Errorf("unexpected title: %q", title)
@@ -65,5 +66,20 @@ func TestSummarizeCommitTypes(t *testing.T) {
 	}
 	if !strings.Contains(result, "fix") {
 		t.Errorf("expected fix in result: %q", result)
+	}
+}
+
+func TestBuildPRFromPlan_IncludesTicket(t *testing.T) {
+	cp := &models.CommitPlan{
+		ToolVersion: "0.6.0",
+		Commits: []models.CommitUnit{
+			{ID: "c1", Type: "feat", Subject: "add changelog command", Hunks: []string{"h1"}},
+		},
+	}
+
+	_, body := buildPRFromPlan(cp, &artifacts.TicketRef{ID: "PROJ-123", Source: "flag"})
+
+	if !strings.Contains(body, "Ticket: PROJ-123") {
+		t.Fatalf("expected ticket in PR body, got %q", body)
 	}
 }

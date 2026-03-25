@@ -104,6 +104,11 @@ index 0000000..def5678
 +echo "hello"
 `
 
+const emptyNewFileDiff = `diff --git a/empty.txt b/empty.txt
+new file mode 100644
+--- /dev/null
++++ b/empty.txt
+`
 
 func TestParseDiff_SingleFile_TwoHunks(t *testing.T) {
 	hunks := ParseDiff(singleFileDiff)
@@ -272,3 +277,18 @@ func TestParseDiff_NewFileMode(t *testing.T) {
 	}
 }
 
+func TestParseDiff_EmptyNewFile(t *testing.T) {
+	hunks := ParseDiff(emptyNewFileDiff)
+	if len(hunks) != 1 {
+		t.Fatalf("expected 1 synthetic hunk for empty new file, got %d", len(hunks))
+	}
+	if !hunks[0].NewFile {
+		t.Error("expected NewFile=true")
+	}
+	if hunks[0].FilePath != "empty.txt" {
+		t.Errorf("expected empty.txt, got %q", hunks[0].FilePath)
+	}
+	if hunks[0].Header != "" {
+		t.Errorf("expected empty header for empty file, got %q", hunks[0].Header)
+	}
+}

@@ -569,7 +569,7 @@ func TestConcatenateBatchGroups(t *testing.T) {
 		}}},
 	}
 
-	merged := concatenateBatchGroups(results)
+	merged := concatenateBatchGroups(results, 10)
 
 	if len(merged.Groups) != 3 {
 		t.Fatalf("expected 3 groups, got %d", len(merged.Groups))
@@ -577,6 +577,31 @@ func TestConcatenateBatchGroups(t *testing.T) {
 	if merged.Groups[0].ID != "g1" || merged.Groups[1].ID != "g2" || merged.Groups[2].ID != "g3" {
 		t.Errorf("unexpected IDs: %s, %s, %s",
 			merged.Groups[0].ID, merged.Groups[1].ID, merged.Groups[2].ID)
+	}
+}
+
+func TestConcatenateBatchGroups_RespectsMaxCommits(t *testing.T) {
+	results := []batchResult{
+		{cr: ClusteringResponse{Groups: []ClusterGroup{
+			{ID: "b1g1", HunkIDs: []string{"f1"}, Rationale: "group one"},
+			{ID: "b1g2", HunkIDs: []string{"f2"}, Rationale: "group two"},
+		}}},
+		{cr: ClusteringResponse{Groups: []ClusterGroup{
+			{ID: "b2g1", HunkIDs: []string{"f3"}, Rationale: "group three"},
+			{ID: "b2g2", HunkIDs: []string{"f4"}, Rationale: "group four"},
+		}}},
+	}
+
+	merged := concatenateBatchGroups(results, 2)
+
+	if len(merged.Groups) != 2 {
+		t.Fatalf("expected 2 groups after cap, got %d", len(merged.Groups))
+	}
+	if len(merged.Groups[0].HunkIDs)+len(merged.Groups[1].HunkIDs) != 4 {
+		t.Fatalf("expected all 4 hunks to be preserved, got %v / %v", merged.Groups[0].HunkIDs, merged.Groups[1].HunkIDs)
+	}
+	if merged.Groups[0].ID != "g1" || merged.Groups[1].ID != "g2" {
+		t.Fatalf("expected sequential IDs after cap, got %s and %s", merged.Groups[0].ID, merged.Groups[1].ID)
 	}
 }
 
@@ -941,6 +966,21 @@ func TestReplayFixtureV05(t *testing.T) {
 		if snap.Trace.AtomicityProfile == "" {
 			t.Error("fixture must include atomicity_profile (v0.5 signal)")
 		}
+	}
+}
+
+func TestBuildInitialCommitPlan_UsesFullPromptFingerprint(t *testing.T) {
+	ec := enginectx.EngineContext{
+		BaseRef: "WORKING_TREE",
+		Hunks: []models.Hunk{
+			{HunkID: "h1", FilePath: "README.md"},
+		},
+		Config: testConfig(),
+	}
+
+	plan := buildInitialCommitPlan(ec)
+	if plan.PromptFingerprint != PromptFingerprint() {
+		t.Fatalf("prompt fingerprint = %s, want %s", plan.PromptFingerprint, PromptFingerprint())
 	}
 }
 
