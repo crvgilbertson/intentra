@@ -9,7 +9,7 @@ require (
 	github.com/fatih/color v1.19.0
 	github.com/invopop/jsonschema v0.13.0
 	github.com/mattn/go-colorable v0.1.14
-	github.com/openai/openai-go/v3 v3.24.0
+	github.com/openai/openai-go/v3 v3.35.0
 	github.com/spf13/cobra v1.10.2
 	gopkg.in/yaml.v3 v3.0.1
 )
